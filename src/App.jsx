@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, Legend, PieChart, Pie, Cell, ReferenceLine
@@ -6,8 +6,64 @@ import {
 import {
   Coffee, Plus, Trash2, TrendingUp, TrendingDown, Wallet,
   LayoutDashboard, ClipboardList, Banknote, PiggyBank, Cookie, Users, Target, Building2, Package, Calculator,
-  Image as ImageIcon, X
+  Image as ImageIcon, X, Download, FileDown, Lock
 } from "lucide-react";
+import html2canvas from "html2canvas";
+import jsPDF from "jspdf";
+
+// ---------- ระบบดึงสรุปข้อมูลเป็นรูปภาพ / PDF ----------
+async function captureNode(node) {
+  return html2canvas(node, {
+    backgroundColor: "#FBF3E1", scale: 2, useCORS: true,
+    ignoreElements: (el) => el.getAttribute && el.getAttribute("data-html2canvas-ignore") === "true",
+  });
+}
+async function exportNodeAsImage(node, filename) {
+  if (!node) return;
+  const canvas = await captureNode(node);
+  const link = document.createElement("a");
+  link.download = `${filename}.png`;
+  link.href = canvas.toDataURL("image/png");
+  link.click();
+}
+async function exportNodeAsPDF(node, filename) {
+  if (!node) return;
+  const canvas = await captureNode(node);
+  const imgData = canvas.toDataURL("image/png");
+  const orientation = canvas.width > canvas.height ? "landscape" : "portrait";
+  const pdf = new jsPDF({ orientation, unit: "px", format: [canvas.width, canvas.height] });
+  pdf.addImage(imgData, "PNG", 0, 0, canvas.width, canvas.height);
+  pdf.save(`${filename}.pdf`);
+}
+
+function ExportButtons({ targetRef, filename, label }) {
+  const [busy, setBusy] = useState(false);
+  const run = async (fn) => {
+    if (!targetRef.current || busy) return;
+    setBusy(true);
+    try { await fn(targetRef.current, filename); } catch (e) { console.error(e); }
+    setBusy(false);
+  };
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }} data-html2canvas-ignore="true">
+      {label && <span style={{ fontSize: 12.5, color: "#8A6E45" }}>{label}</span>}
+      <button
+        onClick={() => run(exportNodeAsImage)}
+        disabled={busy}
+        style={{ ...primaryBtnGhost, opacity: busy ? 0.6 : 1 }}
+      >
+        <ImageIcon size={14} /> รูปภาพ
+      </button>
+      <button
+        onClick={() => run(exportNodeAsPDF)}
+        disabled={busy}
+        style={{ ...primaryBtnGhost, opacity: busy ? 0.6 : 1 }}
+      >
+        <FileDown size={14} /> PDF
+      </button>
+    </div>
+  );
+}
 
 // ---------- Design tokens ----------
 // ink:   #2E1F0D   paper: #FBF3E1   panel: #FFFFFF
@@ -509,14 +565,19 @@ function DashboardTab({ rangeProps, totalCash, totalTransfer, totalTip, totalRev
     { name: "เบเกอรี่", value: bakeryTotal },
   ].filter((g) => g.value > 0);
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
+    <div ref={exportRef}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 22, flexWrap: "wrap", gap: 10 }}>
         <div>
           <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>ภาพรวมร้าน</h1>
           <p style={{ margin: "4px 0 0", color: "#8A6E45", fontSize: 15 }}>สรุปรายรับ-รายจ่าย</p>
         </div>
-        <RangePicker {...rangeProps} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <RangePicker {...rangeProps} />
+          <ExportButtons targetRef={exportRef} filename="แดชบอร์ด" />
+        </div>
       </div>
 
       <div style={{ background: "#4A320F", borderRadius: 16, padding: "18px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, flexWrap: "wrap", gap: 12, boxShadow: "0 4px 14px rgba(74,50,15,0.28)" }}>
@@ -602,8 +663,8 @@ function PieCard({ title, data, empty }) {
 // ---------- Overview tab: เงินลงทุน / กำไรทั้งหมด / จุดคืนทุน (BEP) ----------
 function OverviewTab({ revenue, expenses }) {
   const [investors, setInvestors] = useState([
-    { id: "i1", name: "คุณแบงค์", amount: 200000, pct: 76 },
-    { id: "i2", name: "คุณต้น", amount: 63000, pct: 24 },
+    { id: "i1", name: "พี่แบงค์", amount: 760000, pct: 76, locked: true },
+    { id: "i2", name: "พี่ต้น", amount: 240000, pct: 24, locked: true },
   ]);
 
   const totalInvestment = investors.reduce((s, i) => s + Number(i.amount || 0), 0);
@@ -612,7 +673,7 @@ function OverviewTab({ revenue, expenses }) {
   const updateInvestor = (id, field, val) => {
     setInvestors(investors.map((i) => (i.id === id ? { ...i, [field]: field === "name" ? val : Number(val) || 0 } : i)));
   };
-  const addInvestor = () => setInvestors([...investors, { id: `i${Date.now()}`, name: "ผู้ร่วมลงทุนใหม่", amount: 0, pct: 0 }]);
+  const addInvestor = () => setInvestors([...investors, { id: `i${Date.now()}`, name: "ผู้ร่วมลงทุนใหม่", amount: 0, pct: 0, locked: false }]);
   const removeInvestor = (id) => setInvestors(investors.filter((i) => i.id !== id));
 
   // กำไรจริงรายเดือน (รายรับ − รายจ่ายที่บันทึกจริงทั้งหมด ไม่ใช้สูตรประมาณการ)
@@ -658,9 +719,14 @@ function OverviewTab({ revenue, expenses }) {
     return base.toLocaleDateString("th-TH", { month: "long", year: "numeric" });
   }, [monthsRemaining, monthlyActual, monthsWithData]);
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>สรุปภาพรวมกิจการ</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>สรุปภาพรวมกิจการ</h1>
+        <ExportButtons targetRef={exportRef} filename="สรุปภาพรวมกิจการ" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>เงินลงทุน กำไรสะสมทั้งหมด และจุดคืนทุน (BEP) ของร้าน</p>
 
       {/* เงินลงทุน */}
@@ -674,11 +740,18 @@ function OverviewTab({ revenue, expenses }) {
             <div key={i.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               <input type="text" value={i.name} onChange={(e) => updateInvestor(i.id, "name", e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
               <span style={{ fontSize: 13.5, color: "#8A6E45" }}>เงินลงทุน</span>
-              <input type="number" min={0} value={i.amount} onChange={(e) => updateInvestor(i.id, "amount", e.target.value)} style={{ ...inputStyle, width: 120, textAlign: "right" }} />
+              <input
+                type="number" min={0} value={i.amount}
+                onChange={(e) => updateInvestor(i.id, "amount", e.target.value)}
+                readOnly={i.locked}
+                title={i.locked ? "ตัวเลขนี้ถูกล็อกไว้ ไม่สามารถแก้ไขได้" : ""}
+                style={{ ...inputStyle, width: 120, textAlign: "right", background: i.locked ? "#F0EAD8" : inputStyle.background, color: i.locked ? "#8A6E45" : inputStyle.color, cursor: i.locked ? "not-allowed" : "text" }}
+              />
               <span style={{ fontSize: 13.5, color: "#8A6E45" }}>บาท</span>
+              {i.locked && <Lock size={13} color="#B99B6B" />}
               <span style={{ fontSize: 13.5, color: "#8A6E45" }}>สัดส่วน</span>
               <input type="number" min={0} max={100} value={i.pct} onChange={(e) => updateInvestor(i.id, "pct", e.target.value)} style={{ ...inputStyle, width: 60, textAlign: "right" }} />%
-              <DeleteBtn onClick={() => removeInvestor(i.id)} />
+              {!i.locked && <DeleteBtn onClick={() => removeInvestor(i.id)} />}
             </div>
           ))}
         </div>
@@ -814,6 +887,18 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
   const [dailyTarget, setDailyTarget] = useState(DAILY_TARGET);
   const [monthlyTarget, setMonthlyTarget] = useState(MONTHLY_TARGET);
 
+  // ตัวกรองตารางบันทึกยอดขายรายวัน: เลือกเดือน หรือกำหนดช่วงวันที่เอง
+  const [listUseCustomRange, setListUseCustomRange] = useState(false);
+  const [listRangeFrom, setListRangeFrom] = useState(todayStr());
+  const [listRangeTo, setListRangeTo] = useState(todayStr());
+
+  const filteredSorted = useMemo(() => {
+    if (listUseCustomRange) {
+      return sorted.filter((r) => r.date >= listRangeFrom && r.date <= listRangeTo);
+    }
+    return sorted.filter((r) => monthKey(r.date) === selectedMonth);
+  }, [sorted, listUseCustomRange, listRangeFrom, listRangeTo, selectedMonth]);
+
   const dailyTotalMap = useMemo(() => {
     const map = {};
     revenue.forEach((r) => {
@@ -846,10 +931,17 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
   const selectedMonthSum = selectedMonthTotal ? selectedMonthTotal.general + selectedMonthTotal.bakery : 0;
   const monthOptions = availableMonths.includes(selectedMonth) ? availableMonths : [...availableMonths, selectedMonth].sort();
 
+  const exportRef = useRef(null);
+  const monthlySummaryRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>บันทึกยอดขายรายวัน</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>บันทึกยอดขายรายวัน</h1>
+        <ExportButtons targetRef={exportRef} filename="บันทึกยอดขายรายวัน" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>กรอกยอดรวมต่อวัน แยกเป็น "เมนูทั่วไป" และ "เบเกอรี่" แต่ละกลุ่มแยกเงินสด / เงินโอน / ทิป</p>
+
 
       <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, marginBottom: 22 }}>
         <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} /></Field>
@@ -875,8 +967,34 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
         <button onClick={addRevenue} style={{ ...primaryBtn, marginTop: 16 }}><Plus size={16} /> บันทึกยอดวันนี้</button>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, margin: "0 0 12px" }}>
+        <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>ตารางบันทึกยอดขายรายวัน</h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, background: "#FFFFFF", padding: 4, borderRadius: 10, border: "1px solid #EADFC4" }}>
+            <button
+              onClick={() => setListUseCustomRange(false)}
+              style={{ padding: "6px 12px", borderRadius: 7, border: "none", fontSize: 13, background: !listUseCustomRange ? "#2E1F0D" : "transparent", color: !listUseCustomRange ? "#FBF3E1" : "#6B4F2A", cursor: "pointer", fontWeight: 500 }}
+            >ตามเดือน</button>
+            <button
+              onClick={() => setListUseCustomRange(true)}
+              style={{ padding: "6px 12px", borderRadius: 7, border: "none", fontSize: 13, background: listUseCustomRange ? "#2E1F0D" : "transparent", color: listUseCustomRange ? "#FBF3E1" : "#6B4F2A", cursor: "pointer", fontWeight: 500 }}
+            >กำหนดวันที่เอง</button>
+          </div>
+          {!listUseCustomRange ? (
+            <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)} style={{ ...inputStyle, minWidth: 160 }}>
+              {monthOptions.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
+            </select>
+          ) : (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input type="date" value={listRangeFrom} onChange={(e) => setListRangeFrom(e.target.value)} style={inputStyle} />
+              <span style={{ color: "#8A6E45", fontSize: 13 }}>ถึง</span>
+              <input type="date" value={listRangeTo} onChange={(e) => setListRangeTo(e.target.value)} style={inputStyle} />
+            </div>
+          )}
+        </div>
+      </div>
       <TableShell headers={["วันที่", "ทั่วไป (รวม)", "เบเกอรี่ (รวม)", "รวมทั้งสิ้น", ""]}>
-        {sorted.map((r) => {
+        {filteredSorted.map((r) => {
           const g = r.general || {}, b = r.bakery || {};
           const gTotal = Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0);
           const bTotal = Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
@@ -890,10 +1008,15 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
             </tr>
           );
         })}
-        {sorted.length === 0 && <EmptyRow colSpan={5} text="ยังไม่มีข้อมูลยอดขาย" />}
+        {filteredSorted.length === 0 && <EmptyRow colSpan={5} text="ไม่มีข้อมูลยอดขายในช่วงที่เลือก" />}
       </TableShell>
 
-      <h3 style={{ fontSize: 18, fontWeight: 600, margin: "26px 0 12px", fontFamily: "'Roboto', sans-serif" }}>สรุปยอดขายรายเดือน</h3>
+      <div ref={monthlySummaryRef}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, margin: "26px 0 12px" }}>
+          <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>สรุปยอดขายรายเดือน</h3>
+          <ExportButtons targetRef={monthlySummaryRef} filename="สรุปยอดขายรายเดือน" />
+        </div>
+
       <TableShell headers={["เดือน", "เมนูทั่วไป", "เบเกอรี่", "รวมทั้งสิ้น"]}>
         {monthly.map(([key, v]) => (
           <tr key={key}>
@@ -905,6 +1028,7 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
         ))}
         {monthly.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
       </TableShell>
+      </div>
 
       {/* สรุปยอดขายประจำเดือน (เดือนที่เลือก) */}
       <div style={{ background: "#2E1F0D", borderRadius: 14, padding: "18px 24px", margin: "26px 0", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
@@ -1079,6 +1203,24 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
   const removeExpense = (id) => removeExpenseSynced(id);
   const sorted = [...expenses].sort((a, b) => (a.date < b.date ? 1 : -1));
 
+  // ตัวกรองตารางบันทึกรายจ่าย: เลือกเดือน หรือกำหนดช่วงวันที่เอง
+  const expenseMonths = useMemo(() => {
+    const set = new Set(expenses.map((e) => monthKey(e.date)));
+    return [...set].sort();
+  }, [expenses]);
+  const [listSelectedMonth, setListSelectedMonth] = useState(monthKey(todayStr()));
+  const [listUseCustomRange, setListUseCustomRange] = useState(false);
+  const [listRangeFrom, setListRangeFrom] = useState(todayStr());
+  const [listRangeTo, setListRangeTo] = useState(todayStr());
+  const listMonthOptions = expenseMonths.includes(listSelectedMonth) ? expenseMonths : [...expenseMonths, listSelectedMonth].sort();
+
+  const filteredSorted = useMemo(() => {
+    if (listUseCustomRange) {
+      return sorted.filter((e) => e.date >= listRangeFrom && e.date <= listRangeTo);
+    }
+    return sorted.filter((e) => monthKey(e.date) === listSelectedMonth);
+  }, [sorted, listUseCustomRange, listRangeFrom, listRangeTo, listSelectedMonth]);
+
   const updatePosition = (id, field, val) => {
     setStaffPositions(staffPositions.map((p) => (p.id === id ? { ...p, [field]: (field === "rate" || field === "count") ? Number(val) || 0 : val } : p)));
   };
@@ -1115,9 +1257,15 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
     }));
   }, [expenses, revenue]);
 
+  const exportRef = useRef(null);
+  const monthlySummaryRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>บันทึกรายจ่าย</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>บันทึกรายจ่าย</h1>
+        <ExportButtons targetRef={exportRef} filename="บันทึกรายจ่าย" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>แบ่ง 6 หมวดหลัก: ค่าเช่า / ค่าจ้างพนักงาน / ค่าสาธารณูปโภค / เงินทุนหมุนเวียน / ค่าภาษี / เงินทุนสำรองและซ่อมแซม</p>
 
 
@@ -1208,8 +1356,34 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
         <button onClick={addExpense} style={primaryBtn}><Plus size={16} /> เพิ่มรายจ่าย</button>
       </div>
 
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, margin: "0 0 12px" }}>
+        <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>ตารางบันทึกรายจ่าย</h3>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 6, background: "#FFFFFF", padding: 4, borderRadius: 10, border: "1px solid #EADFC4" }}>
+            <button
+              onClick={() => setListUseCustomRange(false)}
+              style={{ padding: "6px 12px", borderRadius: 7, border: "none", fontSize: 13, background: !listUseCustomRange ? "#2E1F0D" : "transparent", color: !listUseCustomRange ? "#FBF3E1" : "#6B4F2A", cursor: "pointer", fontWeight: 500 }}
+            >ตามเดือน</button>
+            <button
+              onClick={() => setListUseCustomRange(true)}
+              style={{ padding: "6px 12px", borderRadius: 7, border: "none", fontSize: 13, background: listUseCustomRange ? "#2E1F0D" : "transparent", color: listUseCustomRange ? "#FBF3E1" : "#6B4F2A", cursor: "pointer", fontWeight: 500 }}
+            >กำหนดวันที่เอง</button>
+          </div>
+          {!listUseCustomRange ? (
+            <select value={listSelectedMonth} onChange={(e) => setListSelectedMonth(e.target.value)} style={{ ...inputStyle, minWidth: 160 }}>
+              {listMonthOptions.map((k) => <option key={k} value={k}>{monthLabel(k)}</option>)}
+            </select>
+          ) : (
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <input type="date" value={listRangeFrom} onChange={(e) => setListRangeFrom(e.target.value)} style={inputStyle} />
+              <span style={{ color: "#8A6E45", fontSize: 13 }}>ถึง</span>
+              <input type="date" value={listRangeTo} onChange={(e) => setListRangeTo(e.target.value)} style={inputStyle} />
+            </div>
+          )}
+        </div>
+      </div>
       <TableShell headers={["วันที่", "หมวดหมู่", "รายละเอียด", "จำนวนเงิน", "หมายเหตุ", "หลักฐาน", ""]}>
-        {sorted.map((e) => (
+        {filteredSorted.map((e) => (
           <tr key={e.id}>
             <Td>{e.date}</Td>
             <Td>{e.category}</Td>
@@ -1233,12 +1407,12 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
             <Td><DeleteBtn onClick={() => removeExpense(e.id)} /></Td>
           </tr>
         ))}
-        {sorted.length === 0 && <EmptyRow colSpan={7} text="ยังไม่มีรายการรายจ่าย" />}
+        {filteredSorted.length === 0 && <EmptyRow colSpan={7} text="ไม่มีรายการรายจ่ายในช่วงที่เลือก" />}
       </TableShell>
 
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "28px 0 12px", flexWrap: "wrap", gap: 10 }}>
-        <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>สรุปผลรวมรายจ่ายแต่ละหมวด</h3>
+      <h3 style={{ fontSize: 18, fontWeight: 600, margin: "28px 0 4px", fontFamily: "'Roboto', sans-serif" }}>สรุปผลรวมรายจ่ายแต่ละหมวด</h3>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "0 0 12px", flexWrap: "wrap", gap: 10 }}>
         <RangePicker {...rangeProps} />
       </div>
       <p style={{ margin: "0 0 12px", color: "#B99B6B", fontSize: 13 }}>% คือสัดส่วนรายจ่ายแต่ละหมวดเทียบกับยอดขายรวมในช่วงวันที่ที่เลือก</p>
@@ -1257,32 +1431,37 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
         </tr>
       </TableShell>
 
-      <h3 style={{ fontSize: 18, fontWeight: 600, margin: "28px 0 4px", fontFamily: "'Roboto', sans-serif" }}>สรุปรายจ่ายทั้งหมดเทียบเป็นเดือนๆ</h3>
-      <p style={{ margin: "0 0 12px", color: "#B99B6B", fontSize: 13 }}>เทียบรายจ่ายกับรายรับของแต่ละเดือน (ทุกเดือนที่มีข้อมูล)</p>
-      <TableShell headers={["เดือน", "รายรับ", "รายจ่าย", "คงเหลือ"]}>
-        {monthlyComparison.map((m) => (
-          <tr key={m.key}>
-            <Td>{m.label}</Td>
-            <Td style={{ color: "#4A320F", fontWeight: 500 }}>฿{fmt(m.รายรับ)}</Td>
-            <Td style={{ color: "#B23A2E", fontWeight: 500 }}>−฿{fmt(m.รายจ่าย)}</Td>
-            <Td style={{ fontWeight: 700, color: m.รายรับ - m.รายจ่าย >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.รายรับ - m.รายจ่าย)}</Td>
-          </tr>
-        ))}
-        {monthlyComparison.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
-      </TableShell>
+      <div ref={monthlySummaryRef}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "28px 0 4px", flexWrap: "wrap", gap: 10 }}>
+          <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>สรุปรายจ่ายทั้งหมดเทียบเป็นเดือนๆ</h3>
+          <ExportButtons targetRef={monthlySummaryRef} filename="สรุปรายจ่ายรายเดือน" />
+        </div>
+        <p style={{ margin: "0 0 12px", color: "#B99B6B", fontSize: 13 }}>เทียบรายจ่ายกับรายรับของแต่ละเดือน (ทุกเดือนที่มีข้อมูล)</p>
+        <TableShell headers={["เดือน", "รายรับ", "รายจ่าย", "คงเหลือ"]}>
+          {monthlyComparison.map((m) => (
+            <tr key={m.key}>
+              <Td>{m.label}</Td>
+              <Td style={{ color: "#4A320F", fontWeight: 500 }}>฿{fmt(m.รายรับ)}</Td>
+              <Td style={{ color: "#B23A2E", fontWeight: 500 }}>−฿{fmt(m.รายจ่าย)}</Td>
+              <Td style={{ fontWeight: 700, color: m.รายรับ - m.รายจ่าย >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.รายรับ - m.รายจ่าย)}</Td>
+            </tr>
+          ))}
+          {monthlyComparison.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
+        </TableShell>
 
-      <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: "20px", marginTop: 16 }}>
-        <ResponsiveContainer width="100%" height={260}>
-          <BarChart data={monthlyComparison}>
-            <CartesianGrid stroke="#EADFC4" vertical={false} />
-            <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#8A6E45" }} axisLine={{ stroke: "#EADFC4" }} tickLine={false} />
-            <YAxis tick={{ fontSize: 13, fill: "#8A6E45" }} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #EADFC4", fontSize: 14 }} formatter={(v) => `฿${fmt(v)}`} />
-            <Legend wrapperStyle={{ fontSize: 14 }} />
-            <Bar dataKey="รายรับ" fill="#4A320F" radius={[4, 4, 0, 0]} />
-            <Bar dataKey="รายจ่าย" fill="#B23A2E" radius={[4, 4, 0, 0]} />
-          </BarChart>
-        </ResponsiveContainer>
+        <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: "20px", marginTop: 16 }}>
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={monthlyComparison}>
+              <CartesianGrid stroke="#EADFC4" vertical={false} />
+              <XAxis dataKey="label" tick={{ fontSize: 12, fill: "#8A6E45" }} axisLine={{ stroke: "#EADFC4" }} tickLine={false} />
+              <YAxis tick={{ fontSize: 13, fill: "#8A6E45" }} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ borderRadius: 8, border: "1px solid #EADFC4", fontSize: 14 }} formatter={(v) => `฿${fmt(v)}`} />
+              <Legend wrapperStyle={{ fontSize: 14 }} />
+              <Bar dataKey="รายรับ" fill="#4A320F" radius={[4, 4, 0, 0]} />
+              <Bar dataKey="รายจ่าย" fill="#B23A2E" radius={[4, 4, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
       </div>
 
       {lightboxImage && (
@@ -1387,11 +1566,16 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, totalRevenue, totalEx
     setPartners(partners.map((p) => (p.id === id ? { ...p, [field]: field === "pct" ? Number(val) || 0 : val } : p)));
   };
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
+    <div ref={exportRef}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6, flexWrap: "wrap", gap: 10 }}>
         <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>สรุปรายได้-รายจ่าย / แบ่งกำไรท้ายเดือน</h1>
-        <RangePicker {...rangeProps} />
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <RangePicker {...rangeProps} />
+          <ExportButtons targetRef={exportRef} filename="สรุปรายได้-รายจ่าย" />
+        </div>
       </div>
       <p style={{ margin: "4px 0 20px", color: "#8A6E45", fontSize: 15 }}>รายได้และรายจ่ายรายเดือน แล้ววิเคราะห์กำไรแยก 2 กลุ่มเมนู</p>
 
@@ -1552,9 +1736,14 @@ function MenuTab({ menu, setMenu, menuCats, setMenuCats }) {
   const shown = activeCat === "ทั้งหมด" ? menu : menu.filter((m) => m.category === activeCat);
   const grouped = allCats.map((cat) => ({ cat, items: shown.filter((m) => m.category === cat) })).filter((g) => g.items.length > 0);
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>เมนู (ราคา / ต้นทุน)</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>เมนู (ราคา / ต้นทุน)</h1>
+        <ExportButtons targetRef={exportRef} filename="เมนู-ราคาต้นทุน" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>
         แยกหมวดหมู่ครบ 7 หมวด รวมเบเกอรี่ — ใช้ดูกำไรต่อเมนู และเป็นฐานคำนวณกำไร/ต้นทุนเบเกอรี่ในหน้า "สรุปรายได้-รายจ่าย"
       </p>
@@ -1665,9 +1854,14 @@ function CostDetailTab({ costItems, setCostItems }) {
   const shown = activeCat === "ทั้งหมด" ? costItems : costItems.filter((c) => c.category === activeCat);
   const grouped = costCategories.map((cat) => ({ cat, items: shown.filter((c) => c.category === cat) })).filter((g) => g.items.length > 0);
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>รายละเอียดต้นทุน</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>รายละเอียดต้นทุน</h1>
+        <ExportButtons targetRef={exportRef} filename="รายละเอียดต้นทุน" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>รายการวัตถุดิบแยกตามหมวด บาร์ / ครัว / เบเกอรี่ พร้อมหน่วย ยี่ห้อ ราคาต่อหน่วย และแหล่งซื้อ</p>
 
       <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, display: "flex", gap: 12, alignItems: "end", marginBottom: 18, flexWrap: "wrap" }}>
@@ -1774,9 +1968,14 @@ function RecipeCostTab({ costItems, recipes, setRecipes }) {
   const shownRecipes = activeCat === "ทั้งหมด" ? recipes : recipes.filter((r) => r.category === activeCat);
   const grouped = costCategories.map((cat) => ({ cat, items: shownRecipes.filter((r) => r.category === cat) })).filter((g) => g.items.length > 0);
 
+  const exportRef = useRef(null);
+
   return (
-    <div>
-      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>คำนวณต้นทุนเมนู</h1>
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 4 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>คำนวณต้นทุนเมนู</h1>
+        <ExportButtons targetRef={exportRef} filename="คำนวณต้นทุนเมนู" />
+      </div>
       <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>
         เลือกวัตถุดิบจากหน้า "รายละเอียดต้นทุน" มาประกอบเป็นเมนู ระบุปริมาณและเลือกหน่วยที่ใช้ได้ (เช่น ตั้งราคาต่อกิโลกรัมไว้ แต่ใช้จริงเป็นกรัม) ระบบแปลงหน่วยและคำนวณต้นทุนรวมให้อัตโนมัติ — แยกหมวดบาร์ / ครัว / เบเกอรี่
       </p>
@@ -1886,6 +2085,7 @@ function RecipeCostTab({ costItems, recipes, setRecipes }) {
 // ---------- shared bits ----------
 const inputStyle = { border: "1px solid #EADFC4", borderRadius: 8, padding: "8px 10px", fontSize: 14.5, background: "#FBF3E1", color: "#2E1F0D", outline: "none" };
 const primaryBtn = { display: "flex", alignItems: "center", gap: 6, background: "#4A320F", color: "#FFFFFF", border: "none", borderRadius: 10, padding: "9px 16px", fontSize: 14.5, fontWeight: 700, cursor: "pointer", boxShadow: "0 2px 6px rgba(74,50,15,0.35)" };
+const primaryBtnGhost = { display: "flex", alignItems: "center", gap: 6, background: "#FFFFFF", color: "#4A320F", border: "1px solid #EADFC4", borderRadius: 9, padding: "7px 12px", fontSize: 13, fontWeight: 600, cursor: "pointer" };
 
 function Field({ label, children }) {
   return <div style={{ display: "flex", flexDirection: "column", gap: 5 }}><label style={{ fontSize: 13, color: "#8A6E45", fontWeight: 500 }}>{label}</label>{children}</div>;
