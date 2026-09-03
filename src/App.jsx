@@ -6,7 +6,7 @@ import {
 import {
   Coffee, Plus, Trash2, TrendingUp, TrendingDown, Wallet,
   LayoutDashboard, ClipboardList, Banknote, PiggyBank, Cookie, Users, Target, Building2, Package, Calculator,
-  Image as ImageIcon, X, Download, FileDown, Lock, BarChart3, Pencil
+  Image as ImageIcon, X, Download, FileDown, Lock, BarChart3, Pencil, FileText
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
@@ -506,6 +506,7 @@ function CafeManager({ token, userEmail, onLogout }) {
         <NavItem icon={Wallet} label="บันทึกรายจ่าย" active={tab === "expenses"} onClick={() => setTab("expenses")} />
         <NavItem icon={PiggyBank} label="สรุปรายได้-รายจ่าย" active={tab === "split"} onClick={() => setTab("split")} />
         <NavItem icon={BarChart3} label="วิเคราะห์ยอดขายรายสินค้า" active={tab === "analysis"} onClick={() => setTab("analysis")} />
+        <NavItem icon={FileText} label="สลิปเงินเดือนพนักงาน" active={tab === "payroll"} onClick={() => setTab("payroll")} />
         <NavItem icon={ClipboardList} label="เมนู (ราคา/ต้นทุน)" active={tab === "menu"} onClick={() => setTab("menu")} />
         <NavItem icon={Package} label="รายละเอียดต้นทุน" active={tab === "cost"} onClick={() => setTab("cost")} />
         <NavItem icon={Calculator} label="คำนวณต้นทุนเมนู" active={tab === "recipe"} onClick={() => setTab("recipe")} />
@@ -560,6 +561,7 @@ function CafeManager({ token, userEmail, onLogout }) {
           />
         )}
         {tab === "analysis" && <AnalysisTab revenue={revenue} expenses={expenses} />}
+        {tab === "payroll" && <PayrollTab staffPositions={staffPositions} />}
         {tab === "menu" && <MenuTab menu={menu} setMenu={setMenu} menuCats={menuCats} setMenuCats={setMenuCats} />}
         {tab === "cost" && <CostDetailTab costItems={costItems} setCostItems={setCostItems} />}
         {tab === "recipe" && <RecipeCostTab costItems={costItems} recipes={recipes} setRecipes={setRecipes} />}
@@ -1590,14 +1592,24 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, foodTotal, drinkTotal
     { id: "pt1", name: "พี่แบงค์", pct: 76 },
     { id: "pt2", name: "พี่ต้น", pct: 24 },
   ]);
+  const [generalPct, setGeneralPct] = useState(30);
+  const [taxPct, setTaxPct] = useState(5);
+  const [reservePct, setReservePct] = useState(3);
 
   const isBakeryWC = (e) => e.category === WORKING_CAPITAL && e.subcategory === "เค้ก";
 
-  // ตาราง 1 (ตามช่วงวันที่ที่เลือกด้านบน) — ตัดเงินทุนหมุนเวียนเบเกอรี่ออก ยอดขาย = อาหาร+น้ำ
-  const table1ExpenseRange = filteredExpenses.filter((e) => !isBakeryWC(e)).reduce((s, e) => s + Number(e.amount || 0), 0);
+  // ตาราง 1 (ตามช่วงวันที่ที่เลือกด้านบน) — ค่าเช่า/ค่าจ้าง/สาธารณูปโภค จากรายการจริง
+  // เงินทุนหมุนเวียน/ภาษี/เงินทุนสำรอง คำนวณจาก % ของยอดขาย (อาหาร+น้ำ)
+  const rentRange = filteredExpenses.filter((e) => e.category === RENT).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const staffRange = filteredExpenses.filter((e) => e.category === STAFF).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const utilitiesRange = filteredExpenses.filter((e) => e.category === UTILITIES).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const workingCapitalRange = generalTotal * (generalPct / 100);
+  const taxRange = generalTotal * (taxPct / 100);
+  const reserveRange = generalTotal * (reservePct / 100);
+  const table1ExpenseRange = rentRange + staffRange + utilitiesRange + workingCapitalRange + taxRange + reserveRange;
   const table1Net = generalTotal - table1ExpenseRange;
 
-  // ตาราง 2 (เบเกอรี่ล้วน ตามช่วงวันที่ที่เลือก)
+  // ตาราง 2 (เบเกอรี่ล้วน ตามช่วงวันที่ที่เลือก) — ยังใช้รายจ่ายจริงหมวดเงินทุนหมุนเวียน "เค้ก"
   const table2ExpenseRange = filteredExpenses.filter(isBakeryWC).reduce((s, e) => s + Number(e.amount || 0), 0);
   const table2Net = bakeryTotal - table2ExpenseRange;
 
@@ -1615,27 +1627,34 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, foodTotal, drinkTotal
   }, [revenue]);
   const monthlyRevenueRows = Object.entries(monthlyRevenue).sort((a, b) => (a[0] < b[0] ? 1 : -1));
 
-  // รายจ่ายประจำเดือน — ตาราง 1 (ไม่รวมเบเกอรี่) และตาราง 2 (เบเกอรี่ล้วน)
+  // รายจ่ายประจำเดือน — ตาราง 1 (ค่าเช่า/ค่าจ้าง/สาธารณูปโภคจริง + เงินทุนหมุนเวียน/ภาษี/สำรองแบบ %) และตาราง 2 (เบเกอรี่ล้วน จากรายจ่ายจริง)
   const monthlyBreakdown = useMemo(() => {
-    const expTable1 = {}, expTable2 = {};
+    const rentMap = {}, staffMap = {}, utilMap = {}, expTable2 = {};
     expenses.forEach((e) => {
       const key = monthKey(e.date);
-      if (isBakeryWC(e)) expTable2[key] = (expTable2[key] || 0) + Number(e.amount || 0);
-      else expTable1[key] = (expTable1[key] || 0) + Number(e.amount || 0);
+      if (e.category === RENT) rentMap[key] = (rentMap[key] || 0) + Number(e.amount || 0);
+      else if (e.category === STAFF) staffMap[key] = (staffMap[key] || 0) + Number(e.amount || 0);
+      else if (e.category === UTILITIES) utilMap[key] = (utilMap[key] || 0) + Number(e.amount || 0);
+      else if (isBakeryWC(e)) expTable2[key] = (expTable2[key] || 0) + Number(e.amount || 0);
     });
-    const allMonths = new Set([...Object.keys(expTable1), ...Object.keys(expTable2), ...Object.keys(monthlyRevenue)]);
+    const allMonths = new Set([...Object.keys(rentMap), ...Object.keys(staffMap), ...Object.keys(utilMap), ...Object.keys(expTable2), ...Object.keys(monthlyRevenue)]);
     return [...allMonths].sort((a, b) => (a < b ? 1 : -1)).map((key) => {
       const rev = monthlyRevenue[key] || { bakery: 0, food: 0, drink: 0 };
       const revGeneral = rev.food + rev.drink;
-      const exp1 = expTable1[key] || 0;
+      const rent = rentMap[key] || 0;
+      const staff = staffMap[key] || 0;
+      const utilities = utilMap[key] || 0;
+      const workingCapital = revGeneral * (generalPct / 100);
+      const tax = revGeneral * (taxPct / 100);
+      const reserve = revGeneral * (reservePct / 100);
+      const exp1 = rent + staff + utilities + workingCapital + tax + reserve;
       const exp2 = expTable2[key] || 0;
       return {
-        key,
-        revGeneral, exp1, net1: revGeneral - exp1,
+        key, revGeneral, rent, staff, utilities, workingCapital, tax, reserve, exp1, net1: revGeneral - exp1,
         revBakery: rev.bakery, exp2, net2: rev.bakery - exp2,
       };
     });
-  }, [expenses, monthlyRevenue]);
+  }, [expenses, monthlyRevenue, generalPct, taxPct, reservePct]);
 
   const allTimeNet1 = monthlyBreakdown.reduce((s, m) => s + m.net1, 0);
   const allTimeNet2 = monthlyBreakdown.reduce((s, m) => s + m.net2, 0);
@@ -1671,18 +1690,32 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, foodTotal, drinkTotal
         {monthlyRevenueRows.length === 0 && <EmptyRow colSpan={5} text="ยังไม่มีข้อมูล" />}
       </TableShell>
 
-      <h3 style={{ fontSize: 16, fontWeight: 600, margin: "26px 0 10px", fontFamily: "'Roboto', sans-serif" }}>รายจ่ายประจำเดือน — ตาราง 1 (เมนูทั่วไป ไม่รวมเบเกอรี่)</h3>
-      <p style={{ margin: "0 0 10px", color: "#B99B6B", fontSize: 13 }}>ตัดเงินทุนหมุนเวียนหมวดเค้ก (เบเกอรี่) ออก — ยอดขายที่ใช้คำนวณ = เมนูอาหาร + เมนูน้ำ</p>
-      <TableShell headers={["เดือน", "ยอดขาย (อาหาร+น้ำ)", "รายจ่ายรวม (ไม่รวมเค้ก)", "กำไรสุทธิ"]}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "26px 0 10px", flexWrap: "wrap", gap: 10 }}>
+        <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>รายจ่ายประจำเดือน — ตาราง 1 (เมนูทั่วไป ไม่รวมเบเกอรี่)</h3>
+        <div style={{ display: "flex", gap: 14, alignItems: "center", fontSize: 13.5, color: "#8A6E45" }}>
+          <span>เงินทุนหมุนเวียน (อาหาร+น้ำ) <input type="number" min={0} max={100} value={generalPct} onChange={(e) => setGeneralPct(Number(e.target.value) || 0)} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
+          <span>ภาษี <input type="number" min={0} max={100} value={taxPct} onChange={(e) => setTaxPct(Number(e.target.value) || 0)} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
+          <span>สำรอง <input type="number" min={0} max={100} value={reservePct} onChange={(e) => setReservePct(Number(e.target.value) || 0)} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
+        </div>
+      </div>
+      <p style={{ margin: "0 0 10px", color: "#B99B6B", fontSize: 13 }}>
+        ค่าเช่า / ค่าจ้างพนักงาน / สาธารณูปโภค รวมจากรายการที่บันทึกจริง — เงินทุนหมุนเวียน / ภาษี / เงินทุนสำรอง คำนวณจากยอดขาย (อาหาร+น้ำ) เดือนนั้นตาม % ด้านบน (เบเกอรี่แยกไปตาราง 2)
+      </p>
+      <TableShell headers={["เดือน", "ค่าเช่า", "ค่าจ้างพนักงาน", "สาธารณูปโภค", "เงินทุนหมุนเวียนทั่วไป", "ภาษี", "เงินทุนสำรอง", "รวมรายจ่าย", "กำไรสุทธิ"]}>
         {monthlyBreakdown.map((m) => (
           <tr key={m.key}>
             <Td>{monthLabel(m.key)}</Td>
-            <Td>฿{fmt(m.revGeneral)}</Td>
-            <Td style={{ color: "#B23A2E" }}>−฿{fmt(m.exp1)}</Td>
+            <Td>฿{fmt(m.rent)}</Td>
+            <Td>฿{fmt(m.staff)}</Td>
+            <Td>฿{fmt(m.utilities)}</Td>
+            <Td>฿{fmt(m.workingCapital)}</Td>
+            <Td>฿{fmt(m.tax)}</Td>
+            <Td>฿{fmt(m.reserve)}</Td>
+            <Td style={{ fontWeight: 600, color: "#B23A2E" }}>−฿{fmt(m.exp1)}</Td>
             <Td style={{ fontWeight: 600, color: m.net1 >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.net1)}</Td>
           </tr>
         ))}
-        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
+        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={9} text="ยังไม่มีข้อมูล" />}
       </TableShell>
 
       <h3 style={{ fontSize: 16, fontWeight: 600, margin: "26px 0 10px", fontFamily: "'Roboto', sans-serif" }}>รายจ่ายประจำเดือน — ตาราง 2 (เบเกอรี่)</h3>
@@ -1702,7 +1735,9 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, foodTotal, drinkTotal
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
         <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18 }}>
           <h3 style={{ fontSize: 14.5, fontWeight: 600, color: "#4A320F", margin: "0 0 10px" }}>ตาราง 1 — เมนูทั่วไป</h3>
-          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>ยอดขาย (อาหาร+น้ำ) ฿{fmt(generalTotal)} − รายจ่าย (ไม่รวมเค้ก) ฿{fmt(table1ExpenseRange)}</div>
+          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>
+            ยอดขาย (อาหาร+น้ำ) ฿{fmt(generalTotal)} − รายจ่าย (ค่าเช่า+ค่าจ้าง+สาธารณูปโภคจริง ฿{fmt(rentRange + staffRange + utilitiesRange)} + เงินทุนหมุนเวียน {generalPct}% ฿{fmt(workingCapitalRange)} + ภาษี ฿{fmt(taxRange)} + สำรอง ฿{fmt(reserveRange)})
+          </div>
           <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: table1Net >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(table1Net)}</div>
         </div>
         <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18 }}>
@@ -1858,6 +1893,323 @@ function AnalysisTab({ revenue, expenses }) {
           ) : <p style={{ color: "#B99B6B", fontSize: 13 }}>ไม่มีข้อมูลในช่วงที่เลือก</p>}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ---------- Payroll: สลิปเงินเดือนพนักงาน ----------
+const THAI_MONTHS_FULL = ["มกราคม", "กุมภาพันธ์", "มีนาคม", "เมษายน", "พฤษภาคม", "มิถุนายน", "กรกฎาคม", "สิงหาคม", "กันยายน", "ตุลาคม", "พฤศจิกายน", "ธันวาคม"];
+const toBE = (y) => y + 543;
+const formatThaiDateFull = (dateStr) => {
+  if (!dateStr) return "";
+  const d = new Date(dateStr + "T00:00:00");
+  return `${d.getDate()} ${THAI_MONTHS_FULL[d.getMonth()]} ${toBE(d.getFullYear())}`;
+};
+const formatThaiRange = (fromStr, toStr) => {
+  if (!fromStr || !toStr) return "";
+  const f = new Date(fromStr + "T00:00:00");
+  const t = new Date(toStr + "T00:00:00");
+  const fY = toBE(f.getFullYear()), tY = toBE(t.getFullYear());
+  if (f.getFullYear() === t.getFullYear() && f.getMonth() === t.getMonth()) {
+    return `${f.getDate()}-${t.getDate()} ${THAI_MONTHS_FULL[f.getMonth()]} ${fY}`;
+  }
+  if (fY === tY) {
+    return `${f.getDate()} ${THAI_MONTHS_FULL[f.getMonth()]} - ${t.getDate()} ${THAI_MONTHS_FULL[t.getMonth()]} ${fY}`;
+  }
+  return `${f.getDate()} ${THAI_MONTHS_FULL[f.getMonth()]} ${fY} - ${t.getDate()} ${THAI_MONTHS_FULL[t.getMonth()]} ${tY}`;
+};
+
+const seedEmployees = [
+  { id: "emp1", code: "001", name: "", position: "ผู้จัดการ", employeeType: "รายเดือน", bankAccountName: "", bankAccountNumber: "", baseSalary: 15000 },
+];
+
+function PayrollTab({ staffPositions }) {
+  const [employees, setEmployees] = useState(seedEmployees);
+  const [showRoster, setShowRoster] = useState(false);
+  const [selectedEmpId, setSelectedEmpId] = useState(seedEmployees[0]?.id || "");
+
+  const addEmployee = () => {
+    const id = `emp${Date.now()}`;
+    setEmployees([...employees, { id, code: "", name: "", position: staffPositions[0]?.name || "", employeeType: "รายเดือน", bankAccountName: "", bankAccountNumber: "", baseSalary: staffPositions[0]?.rate || 0 }]);
+    setSelectedEmpId(id);
+  };
+  const updateEmployee = (id, field, val) => {
+    setEmployees(employees.map((e) => (e.id === id ? { ...e, [field]: field === "baseSalary" ? Number(val) || 0 : val } : e)));
+  };
+  const removeEmployee = (id) => {
+    const next = employees.filter((e) => e.id !== id);
+    setEmployees(next);
+    if (selectedEmpId === id) setSelectedEmpId(next[0]?.id || "");
+  };
+
+  const selectedEmp = employees.find((e) => e.id === selectedEmpId) || null;
+
+  // ฟอร์มสลิป
+  const todayIso = todayStr();
+  const [periodFrom, setPeriodFrom] = useState(todayIso);
+  const [periodTo, setPeriodTo] = useState(todayIso);
+  const [paymentDate, setPaymentDate] = useState(todayIso);
+  const [salary, setSalary] = useState(0);
+  const [otRate, setOtRate] = useState(100);
+  const [otHours, setOtHours] = useState(0);
+  const [commission, setCommission] = useState(0);
+  const [otherIncome, setOtherIncome] = useState(0);
+  const [bonus, setBonus] = useState(0);
+  const [extraIncomeRows, setExtraIncomeRows] = useState([]);
+  const [deductionRows, setDeductionRows] = useState([{ id: "d1", label: "หักลาหยุดไม่ตามเงื่อนไข", amount: 0 }]);
+  const [approverName, setApproverName] = useState("นายภูรินท์ จิตโสภา");
+  const [approverPosition, setApproverPosition] = useState("ผู้จัดการร้าน");
+
+  // เมื่อเลือกพนักงาน เติมเงินเดือนพื้นฐานให้อัตโนมัติ (ยังแก้ไขเองได้)
+  const applyEmployeeDefaults = (emp) => {
+    if (!emp) return;
+    setSalary(emp.baseSalary || 0);
+  };
+
+  const otAmount = (Number(otRate) || 0) * (Number(otHours) || 0);
+  const addExtraIncome = () => setExtraIncomeRows([...extraIncomeRows, { id: `ei${Date.now()}`, label: "รายได้เพิ่มเติม", amount: 0 }]);
+  const updateExtraIncome = (id, field, val) => setExtraIncomeRows(extraIncomeRows.map((r) => (r.id === id ? { ...r, [field]: field === "amount" ? Number(val) || 0 : val } : r)));
+  const removeExtraIncome = (id) => setExtraIncomeRows(extraIncomeRows.filter((r) => r.id !== id));
+
+  const addDeduction = () => setDeductionRows([...deductionRows, { id: `d${Date.now()}`, label: "รายการหักเพิ่มเติม", amount: 0 }]);
+  const updateDeduction = (id, field, val) => setDeductionRows(deductionRows.map((r) => (r.id === id ? { ...r, [field]: field === "amount" ? Number(val) || 0 : val } : r)));
+  const removeDeduction = (id) => setDeductionRows(deductionRows.filter((r) => r.id !== id));
+
+  const totalIncome = (Number(salary) || 0) + otAmount + (Number(commission) || 0) + (Number(otherIncome) || 0) + (Number(bonus) || 0)
+    + extraIncomeRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+  const totalDeduction = deductionRows.reduce((s, r) => s + Number(r.amount || 0), 0);
+  const netPay = totalIncome - totalDeduction;
+
+  const slipRef = useRef(null);
+  const filenameSafe = `สลิปเงินเดือน-${selectedEmp?.name || "พนักงาน"}-${paymentDate}`.replace(/\s+/g, "_");
+
+  return (
+    <div>
+      <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: "0 0 4px" }}>สลิปเงินเดือนพนักงาน</h1>
+      <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>เลือกพนักงาน กรอกรายละเอียดเงินเดือน ระบบคำนวณยอดสุทธิให้อัตโนมัติ แล้ว Export เป็น PDF ได้</p>
+
+      {/* รายชื่อพนักงาน */}
+      <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 16, marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showRoster ? 10 : 0 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, color: "#6B4F2A", margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
+            <Users size={14} /> รายชื่อพนักงาน ({employees.length} คน)
+          </h3>
+          <div style={{ display: "flex", gap: 8 }}>
+            {showRoster && <button onClick={addEmployee} style={{ ...primaryBtn, padding: "6px 12px", fontSize: 13 }}><Plus size={14} /> เพิ่มพนักงาน</button>}
+            <button onClick={() => setShowRoster(!showRoster)} style={{ ...primaryBtn, padding: "6px 12px", fontSize: 13.5, background: showRoster ? "#FBF3E1" : "#2E1F0D", color: showRoster ? "#6B4F2A" : "#FBF3E1", border: showRoster ? "1px solid #EADFC4" : "none" }}>
+              {showRoster ? "ซ่อน" : "จัดการรายชื่อ"}
+            </button>
+          </div>
+        </div>
+        {showRoster && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
+            {employees.map((e) => (
+              <div key={e.id} style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", padding: "6px 0", borderBottom: "1px solid #F1E7D0" }}>
+                <input type="text" placeholder="รหัสพนักงาน" value={e.code} onChange={(ev) => updateEmployee(e.id, "code", ev.target.value)} style={{ ...inputStyle, width: 90 }} />
+                <input type="text" placeholder="ชื่อ-นามสกุล" value={e.name} onChange={(ev) => updateEmployee(e.id, "name", ev.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 140 }} />
+                <select value={e.position} onChange={(ev) => updateEmployee(e.id, "position", ev.target.value)} style={{ ...inputStyle, minWidth: 130 }}>
+                  {staffPositions.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
+                  <option value={e.position}>{staffPositions.some((p) => p.name === e.position) ? "" : e.position}</option>
+                </select>
+                <select value={e.employeeType} onChange={(ev) => updateEmployee(e.id, "employeeType", ev.target.value)} style={{ ...inputStyle, width: 110 }}>
+                  <option value="รายเดือน">รายเดือน</option>
+                  <option value="รายวัน">รายวัน</option>
+                  <option value="พาร์ทไทม์">พาร์ทไทม์</option>
+                </select>
+                <input type="text" placeholder="ธนาคาร/บัญชี" value={e.bankAccountName} onChange={(ev) => updateEmployee(e.id, "bankAccountName", ev.target.value)} style={{ ...inputStyle, width: 120 }} />
+                <input type="text" placeholder="เลขที่บัญชี" value={e.bankAccountNumber} onChange={(ev) => updateEmployee(e.id, "bankAccountNumber", ev.target.value)} style={{ ...inputStyle, width: 130 }} />
+                <span style={{ fontSize: 12.5, color: "#8A6E45" }}>เงินเดือนพื้นฐาน</span>
+                <input type="number" min={0} value={e.baseSalary} onChange={(ev) => updateEmployee(e.id, "baseSalary", ev.target.value)} style={{ ...inputStyle, width: 90, textAlign: "right" }} />
+                <DeleteBtn onClick={() => removeEmployee(e.id)} />
+              </div>
+            ))}
+            {employees.length === 0 && <p style={{ color: "#B99B6B", fontSize: 13 }}>ยังไม่มีพนักงาน กด "เพิ่มพนักงาน" เพื่อเริ่มต้น</p>}
+          </div>
+        )}
+      </div>
+
+      {/* เลือกพนักงานสำหรับออกสลิป */}
+      <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, marginBottom: 22 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap", marginBottom: 16 }}>
+          <Field label="เลือกพนักงาน">
+            <select
+              value={selectedEmpId}
+              onChange={(e) => { setSelectedEmpId(e.target.value); applyEmployeeDefaults(employees.find((x) => x.id === e.target.value)); }}
+              style={{ ...inputStyle, minWidth: 200 }}
+            >
+              {employees.length === 0 && <option value="">— ยังไม่มีพนักงาน —</option>}
+              {employees.map((e) => <option key={e.id} value={e.id}>{e.name || "(ยังไม่ตั้งชื่อ)"} — {e.position}</option>)}
+            </select>
+          </Field>
+          <Field label="งวดวันที่ (จาก)"><input type="date" value={periodFrom} onChange={(e) => setPeriodFrom(e.target.value)} style={inputStyle} /></Field>
+          <Field label="ถึง"><input type="date" value={periodTo} onChange={(e) => setPeriodTo(e.target.value)} style={inputStyle} /></Field>
+          <Field label="วันที่จ่าย"><input type="date" value={paymentDate} onChange={(e) => setPaymentDate(e.target.value)} style={inputStyle} /></Field>
+        </div>
+
+        {selectedEmp ? (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, marginBottom: 18 }}>
+              {/* รายได้ */}
+              <div>
+                <h4 style={{ fontSize: 14, fontWeight: 700, color: "#4A320F", margin: "0 0 10px" }}>รายได้</h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13.5 }}>เงินเดือน</span>
+                    <input type="number" min={0} value={salary} onChange={(e) => setSalary(e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13.5 }}>ค่าล่วงเวลา (อัตรา×ชม.)</span>
+                    <input type="number" min={0} value={otRate} onChange={(e) => setOtRate(e.target.value)} title="อัตราบาท/ชม." style={{ ...inputStyle, width: 70, textAlign: "right" }} />
+                    <span style={{ fontSize: 12.5, color: "#8A6E45" }}>×</span>
+                    <input type="number" min={0} value={otHours} onChange={(e) => setOtHours(e.target.value)} title="จำนวนชั่วโมง" style={{ ...inputStyle, width: 60, textAlign: "right" }} />
+                    <span style={{ fontSize: 13, fontWeight: 600, minWidth: 70, textAlign: "right" }}>฿{fmt(otAmount)}</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13.5 }}>ค่าคอมมิชชั่น</span>
+                    <input type="number" min={0} value={commission} onChange={(e) => setCommission(e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13.5 }}>เงินได้อื่นๆ</span>
+                    <input type="number" min={0} value={otherIncome} onChange={(e) => setOtherIncome(e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ flex: 1, fontSize: 13.5 }}>เงินพิเศษ</span>
+                    <input type="number" min={0} value={bonus} onChange={(e) => setBonus(e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                  </div>
+                  {extraIncomeRows.map((r) => (
+                    <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="text" value={r.label} onChange={(e) => updateExtraIncome(r.id, "label", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+                      <input type="number" min={0} value={r.amount} onChange={(e) => updateExtraIncome(r.id, "amount", e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                      <DeleteBtn onClick={() => removeExtraIncome(r.id)} />
+                    </div>
+                  ))}
+                  <button onClick={addExtraIncome} style={{ ...ghostBtn, alignSelf: "flex-start", marginTop: 4 }}><Plus size={13} /> เพิ่มรายได้</button>
+                </div>
+              </div>
+
+              {/* รายการหัก */}
+              <div>
+                <h4 style={{ fontSize: 14, fontWeight: 700, color: "#B23A2E", margin: "0 0 10px" }}>รายการหัก</h4>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {deductionRows.map((r) => (
+                    <div key={r.id} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <input type="text" value={r.label} onChange={(e) => updateDeduction(r.id, "label", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
+                      <input type="number" min={0} value={r.amount} onChange={(e) => updateDeduction(r.id, "amount", e.target.value)} style={{ ...inputStyle, width: 110, textAlign: "right" }} />
+                      <DeleteBtn onClick={() => removeDeduction(r.id)} />
+                    </div>
+                  ))}
+                  <button onClick={addDeduction} style={{ ...ghostBtn, alignSelf: "flex-start", marginTop: 4 }}><Plus size={13} /> เพิ่มรายการหัก</button>
+                </div>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", gap: 12, alignItems: "end", flexWrap: "wrap" }}>
+              <Field label="ผู้อนุมัติ"><input type="text" value={approverName} onChange={(e) => setApproverName(e.target.value)} style={{ ...inputStyle, minWidth: 160 }} /></Field>
+              <Field label="ตำแหน่งผู้อนุมัติ"><input type="text" value={approverPosition} onChange={(e) => setApproverPosition(e.target.value)} style={{ ...inputStyle, minWidth: 140 }} /></Field>
+            </div>
+          </>
+        ) : (
+          <p style={{ color: "#B99B6B", fontSize: 13.5 }}>เพิ่มพนักงานในรายชื่อด้านบนก่อน จึงจะออกสลิปได้</p>
+        )}
+      </div>
+
+      {selectedEmp && (
+        <>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 12 }}>
+            <h3 style={{ fontSize: 18, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>ตัวอย่างสลิปเงินเดือน</h3>
+            <ExportButtons targetRef={slipRef} filename={filenameSafe} />
+          </div>
+
+          {/* ตัวสลิป — เค้าโครงตามไฟล์ตัวอย่าง */}
+          <div ref={slipRef} style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 12, padding: 32, maxWidth: 820, margin: "0 auto" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 18 }}>
+              <img src={LOGO_DATA_URI} alt="Rove & Rounds Coffee" style={{ width: 64, height: 64, borderRadius: 10, objectFit: "cover" }} />
+              <div style={{ flex: 1, textAlign: "center" }}>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>ROVE AND ROUND COFFEE</div>
+                <div style={{ fontSize: 12.5, color: "#3A2712" }}>เลขที่ 1/18 ถ.ไทรบุรี ต.บ่อยาง อ.เมืองสงขลา จ.สงขลา 90000</div>
+                <div style={{ fontSize: 12.5, color: "#3A2712" }}>E-mail : roveandround1@gmail.com</div>
+              </div>
+            </div>
+            <div style={{ textAlign: "center", fontWeight: 700, fontSize: 14, marginBottom: 16 }}>
+              สลิปเงินเดือน ประจำเดือนวันที่ {formatThaiRange(periodFrom, periodTo)}
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, fontSize: 13, marginBottom: 16 }}>
+              <div>รหัสพนักงาน &nbsp; {selectedEmp.code}</div>
+              <div>ชื่อ-นามสกุล &nbsp; {selectedEmp.name}</div>
+              <div>ตำแหน่ง &nbsp; {selectedEmp.position}</div>
+              <div>โอนเข้าบัญชี &nbsp; {selectedEmp.bankAccountName}</div>
+              <div>ประเภทพนักงาน &nbsp; {selectedEmp.employeeType}</div>
+              <div>เลขที่บัญชี &nbsp; {selectedEmp.bankAccountNumber}</div>
+            </div>
+
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, marginBottom: 16 }}>
+              <thead>
+                <tr style={{ background: "#FBF3E1" }}>
+                  <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "left" }}>รายได้</th>
+                  <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "right", width: 100 }}>จำนวนเงิน (บาท)</th>
+                  <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "left" }}>รายการหัก</th>
+                  <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "right", width: 100 }}>จำนวนเงิน (บาท)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: Math.max(5 + extraIncomeRows.length, deductionRows.length) }).map((_, i) => {
+                  const incomeLabels = [
+                    { label: "เงินเดือน", amount: salary },
+                    { label: "ค่าล่วงเวลา", amount: otAmount },
+                    { label: "ค่าคอมมิชชั่น", amount: commission },
+                    { label: "เงินได้อื่นๆ", amount: otherIncome },
+                    { label: "เงินพิเศษ", amount: bonus },
+                    ...extraIncomeRows,
+                  ];
+                  const inc = incomeLabels[i];
+                  const ded = deductionRows[i];
+                  return (
+                    <tr key={i}>
+                      <Td style={{ borderBottom: "none" }}>{inc ? inc.label : ""}</Td>
+                      <Td style={{ borderBottom: "none", textAlign: "right" }}>{inc ? (Number(inc.amount) ? fmt(inc.amount) : "-") : ""}</Td>
+                      <Td style={{ borderBottom: "none" }}>{ded ? ded.label : ""}</Td>
+                      <Td style={{ borderBottom: "none", textAlign: "right" }}>{ded ? (Number(ded.amount) ? fmt(ded.amount) : "-") : ""}</Td>
+                    </tr>
+                  );
+                })}
+                <tr style={{ background: "#FBF3E1", fontWeight: 700 }}>
+                  <Td style={{ borderBottom: "none" }}>รวมเงินรายได้ทั้งหมด</Td>
+                  <Td style={{ borderBottom: "none", textAlign: "right" }}>{fmt(totalIncome)}</Td>
+                  <Td style={{ borderBottom: "none" }}>รวมรายการหักทั้งหมด</Td>
+                  <Td style={{ borderBottom: "none", textAlign: "right" }}>{fmt(totalDeduction)}</Td>
+                </tr>
+              </tbody>
+            </table>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20, alignItems: "start" }}>
+              <div>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <thead>
+                    <tr style={{ background: "#FBF3E1" }}>
+                      <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "left" }}>วัน/เดือน/ปี ที่จ่าย</th>
+                      <th style={{ border: "1px solid #EADFC4", padding: "8px 10px", textAlign: "right" }}>ยอดเงินสุทธิ (บาท)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <Td style={{ borderBottom: "1px solid #EADFC4" }}>{formatThaiDateFull(paymentDate)}</Td>
+                      <Td style={{ borderBottom: "1px solid #EADFC4", textAlign: "right", fontWeight: 700 }}>{fmt(netPay)}</Td>
+                    </tr>
+                  </tbody>
+                </table>
+                <p style={{ fontSize: 12, color: "#8A6E45", marginTop: 8 }}>ลายมือชื่อพนักงาน …………………………</p>
+              </div>
+              <div style={{ textAlign: "center", fontSize: 13 }}>
+                <div style={{ fontWeight: 600, marginBottom: 30 }}>ลายมือผู้อนุมัติ</div>
+                <div>ลงชื่อ………………………………………………</div>
+                <div style={{ marginTop: 4 }}>({approverName})</div>
+                <div>ตำแหน่ง {approverPosition}</div>
+              </div>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }
@@ -2388,3 +2740,4 @@ export default function Root() {
     />
   );
 }
+
