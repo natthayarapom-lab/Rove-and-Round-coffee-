@@ -6,7 +6,7 @@ import {
 import {
   Coffee, Plus, Trash2, TrendingUp, TrendingDown, Wallet,
   LayoutDashboard, ClipboardList, Banknote, PiggyBank, Cookie, Users, Target, Building2, Package, Calculator,
-  Image as ImageIcon, X, Download, FileDown, Lock
+  Image as ImageIcon, X, Download, FileDown, Lock, BarChart3, Pencil
 } from "lucide-react";
 import html2canvas from "html2canvas";
 import jsPDF from "jspdf";
@@ -110,13 +110,15 @@ async function supaRest(path, token, options = {}) {
 // แปลงข้อมูลระหว่างรูปแบบตาราง Supabase <-> รูปแบบที่แอปใช้
 const revenueRowToApp = (r) => ({
   id: r.id, date: r.entry_date,
-  general: { cash: Number(r.general_cash) || 0, transfer: Number(r.general_transfer) || 0, tip: Number(r.general_tip) || 0 },
+  total: { cash: Number(r.total_cash) || 0, transfer: Number(r.total_transfer) || 0, tip: Number(r.total_tip) || 0 },
   bakery: { cash: Number(r.bakery_cash) || 0, transfer: Number(r.bakery_transfer) || 0, tip: Number(r.bakery_tip) || 0 },
+  food: { cash: Number(r.food_cash) || 0, transfer: Number(r.food_transfer) || 0, tip: Number(r.food_tip) || 0 },
 });
 const revenueAppToRow = (rec) => ({
   entry_date: rec.date,
-  general_cash: rec.general.cash, general_transfer: rec.general.transfer, general_tip: rec.general.tip,
+  total_cash: rec.total.cash, total_transfer: rec.total.transfer, total_tip: rec.total.tip,
   bakery_cash: rec.bakery.cash, bakery_transfer: rec.bakery.transfer, bakery_tip: rec.bakery.tip,
+  food_cash: rec.food.cash, food_transfer: rec.food.transfer, food_tip: rec.food.tip,
 });
 const expenseRowToApp = (r) => ({
   id: r.id, date: r.entry_date, category: r.category, subcategory: r.subcategory,
@@ -144,6 +146,15 @@ const monthLabel = (key) => {
   return new Date(y, m - 1, 1).toLocaleDateString("th-TH", { month: "long", year: "numeric" });
 };
 
+// ---- ยอดขาย 3 ส่วน: ยอดขายทั้งหมด / เบเกอรี่ / เมนูอาหาร — เมนูน้ำคำนวณจากส่วนต่าง ----
+const grpSum = (g) => Number(g?.cash || 0) + Number(g?.transfer || 0) + Number(g?.tip || 0);
+const computeDrinkGroup = (rec) => ({
+  cash: Number(rec.total?.cash || 0) - Number(rec.bakery?.cash || 0) - Number(rec.food?.cash || 0),
+  transfer: Number(rec.total?.transfer || 0) - Number(rec.bakery?.transfer || 0) - Number(rec.food?.transfer || 0),
+  tip: Number(rec.total?.tip || 0) - Number(rec.bakery?.tip || 0) - Number(rec.food?.tip || 0),
+});
+const recTotalSum = (rec) => grpSum(rec.total);
+
 // หมวดหมู่เมนู (ทั่วไป + เบเกอรี่แยกต่างหาก)
 const defaultMenuCategories = ["อาหารเช้า", "อาหารเที่ยง", "เมนู Special", "กาแฟ", "มัทฉะ", "อื่นๆ"];
 const BAKERY = "เบเกอรี่";
@@ -163,12 +174,13 @@ const seedMenu = [
   { id: "m11", name: "เค้กกล้วยหอม", price: 60, cost: 20, category: BAKERY },
 ];
 
-// รายรับ: บันทึกเป็นยอดรวมต่อวัน แยก 2 กลุ่ม (เมนูทั่วไป / เบเกอรี่) และแยกเงินสด-โอน-ทิปในแต่ละกลุ่ม
+// รายรับ: บันทึกเป็นยอดรวมต่อวัน 3 ส่วน (ยอดขายทั้งหมด / เบเกอรี่ / เมนูอาหาร) — เมนูน้ำคำนวณจากส่วนต่าง
 const seedRevenue = [
   {
     id: "r1", date: todayStr(),
-    general: { cash: 1800, transfer: 12500, tip: 200 },
-    bakery: { cash: 835, transfer: 3559, tip: 0 },
+    total: { cash: 4200, transfer: 12800, tip: 200 },
+    bakery: { cash: 900, transfer: 2600, tip: 0 },
+    food: { cash: 1800, transfer: 5200, tip: 100 },
   },
 ];
 
@@ -179,23 +191,24 @@ const UTILITIES = "ค่าสาธารณูปโภค";
 const WORKING_CAPITAL = "เงินทุนหมุนเวียน";
 const TAX = "ค่าภาษี";
 const RESERVE = "เงินทุนสำรองและซ่อมแซม";
+const WC_SUBS = ["บาร์", "ครัว", "เค้ก", "ส่วนกลาง"];
 
 const expenseMainCategories = [
   { key: RENT, kind: "simple" },
   { key: STAFF, kind: "staff" },
   { key: UTILITIES, kind: "sub", subs: ["ค่าไฟ", "ค่าน้ำ", "อินเทอร์เน็ต"] },
-  { key: WORKING_CAPITAL, kind: "sub", subs: ["บาร์", "ครัว", "เค้ก"] },
+  { key: WORKING_CAPITAL, kind: "sub", subs: WC_SUBS },
   { key: TAX, kind: "simple" },
   { key: RESERVE, kind: "simple" },
 ];
 
-// 5 ตำแหน่งพนักงาน ค่าจ้าง+จำนวนตั้งต้น (แก้ไขได้ในหน้าบันทึกรายจ่าย) — unit: "คน" (รายเดือน) หรือ "วัน" (รายวัน)
+// 5 ตำแหน่งพนักงาน ค่าจ้าง+จำนวนตั้งต้น (แก้ไข/เพิ่ม/ลบได้ในหน้าบันทึกรายจ่าย) — unit: "คน" (รายเดือน) หรือ "วัน" (รายวัน)
 const defaultStaffPositions = [
-  { id: "p1", name: "ผู้จัดการ", rate: 15000, count: 1, unit: "คน" },
-  { id: "p2", name: "แม่ครัว", rate: 9000, count: 1, unit: "คน" },
-  { id: "p3", name: "ผู้ช่วยครัว", rate: 7000, count: 1, unit: "คน" },
-  { id: "p4", name: "พนักงานบาร์", rate: 8000, count: 1, unit: "คน" },
-  { id: "p5", name: "พนักงานพาร์ทไทม์", rate: 350, count: 3, unit: "วัน" },
+  { id: "p1", name: "ผู้จัดการ", rate: 15000, count: 1, unit: "คน", note: "" },
+  { id: "p2", name: "แม่ครัว", rate: 9000, count: 1, unit: "คน", note: "" },
+  { id: "p3", name: "ผู้ช่วยครัว", rate: 7000, count: 1, unit: "คน", note: "" },
+  { id: "p4", name: "พนักงานบาร์", rate: 8000, count: 1, unit: "คน", note: "" },
+  { id: "p5", name: "พนักงานพาร์ทไทม์", rate: 350, count: 3, unit: "วัน", note: "" },
 ];
 
 const seedExpenses = [
@@ -406,6 +419,20 @@ function CafeManager({ token, userEmail, onLogout }) {
       setExpenses(prevState);
     }
   };
+  const updateExpenseSynced = async (id, rec) => {
+    const prevState = expenses;
+    setExpenses((prev) => prev.map((e) => (e.id === id ? { ...e, ...rec } : e)));
+    try {
+      await supaRest(`expenses?id=eq.${id}`, token, {
+        method: "PATCH",
+        body: JSON.stringify(expenseAppToRow(rec)),
+        prefer: "return=minimal",
+      });
+    } catch (err) {
+      setSyncError("แก้ไขรายจ่ายไม่สำเร็จ: " + err.message);
+      setExpenses(prevState);
+    }
+  };
 
   const [range, setRange] = useState("today");
   const [customFrom, setCustomFrom] = useState(todayStr());
@@ -428,15 +455,18 @@ function CafeManager({ token, userEmail, onLogout }) {
     transfer: list.reduce((s, r) => s + Number(r[group]?.transfer || 0), 0),
     tip: list.reduce((s, r) => s + Number(r[group]?.tip || 0), 0),
   });
-  const generalSum = sumGroup(filteredRevenue, "general");
+  const totalSum = sumGroup(filteredRevenue, "total");
   const bakerySum = sumGroup(filteredRevenue, "bakery");
-  const generalTotal = generalSum.cash + generalSum.transfer + generalSum.tip;
-  const bakeryTotal = bakerySum.cash + bakerySum.transfer + bakerySum.tip;
+  const foodSum = sumGroup(filteredRevenue, "food");
 
-  const totalCash = generalSum.cash + bakerySum.cash;
-  const totalTransfer = generalSum.transfer + bakerySum.transfer;
-  const totalTip = generalSum.tip + bakerySum.tip;
-  const totalRevenue = generalTotal + bakeryTotal;
+  const totalCash = totalSum.cash;
+  const totalTransfer = totalSum.transfer;
+  const totalTip = totalSum.tip;
+  const totalRevenue = totalCash + totalTransfer + totalTip;
+  const bakeryTotal = bakerySum.cash + bakerySum.transfer + bakerySum.tip;
+  const foodTotal = foodSum.cash + foodSum.transfer + foodSum.tip;
+  const drinkTotal = totalRevenue - bakeryTotal - foodTotal;
+  const generalTotal = totalRevenue - bakeryTotal; // เมนูทั่วไป = อาหาร + น้ำ (ไม่รวมเบเกอรี่)
   const totalExpenses = filteredExpenses.reduce((s, e) => s + Number(e.amount || 0), 0);
   const netProfit = totalRevenue - totalExpenses;
 
@@ -475,6 +505,7 @@ function CafeManager({ token, userEmail, onLogout }) {
         <NavItem icon={Banknote} label="บันทึกยอดขายรายวัน" active={tab === "revenue"} onClick={() => setTab("revenue")} />
         <NavItem icon={Wallet} label="บันทึกรายจ่าย" active={tab === "expenses"} onClick={() => setTab("expenses")} />
         <NavItem icon={PiggyBank} label="สรุปรายได้-รายจ่าย" active={tab === "split"} onClick={() => setTab("split")} />
+        <NavItem icon={BarChart3} label="วิเคราะห์ยอดขายรายสินค้า" active={tab === "analysis"} onClick={() => setTab("analysis")} />
         <NavItem icon={ClipboardList} label="เมนู (ราคา/ต้นทุน)" active={tab === "menu"} onClick={() => setTab("menu")} />
         <NavItem icon={Package} label="รายละเอียดต้นทุน" active={tab === "cost"} onClick={() => setTab("cost")} />
         <NavItem icon={Calculator} label="คำนวณต้นทุนเมนู" active={tab === "recipe"} onClick={() => setTab("recipe")} />
@@ -514,7 +545,7 @@ function CafeManager({ token, userEmail, onLogout }) {
         {tab === "expenses" && (
           <ExpensesTab
             expenses={expenses} setExpenses={setExpenses}
-            addExpenseSynced={addExpenseSynced} removeExpenseSynced={removeExpenseSynced}
+            addExpenseSynced={addExpenseSynced} removeExpenseSynced={removeExpenseSynced} updateExpenseSynced={updateExpenseSynced}
             staffPositions={staffPositions} setStaffPositions={setStaffPositions}
             rangeProps={rangeProps} totalRevenue={totalRevenue} filteredExpenses={filteredExpenses}
             revenue={revenue}
@@ -523,11 +554,12 @@ function CafeManager({ token, userEmail, onLogout }) {
         {tab === "split" && (
           <SplitTab
             rangeProps={rangeProps}
-            generalTotal={generalTotal} bakeryTotal={bakeryTotal}
+            generalTotal={generalTotal} bakeryTotal={bakeryTotal} foodTotal={foodTotal} drinkTotal={drinkTotal}
             totalRevenue={totalRevenue} totalExpenses={totalExpenses}
             menu={menu} revenue={revenue} expenses={expenses} filteredExpenses={filteredExpenses}
           />
         )}
+        {tab === "analysis" && <AnalysisTab revenue={revenue} expenses={expenses} />}
         {tab === "menu" && <MenuTab menu={menu} setMenu={setMenu} menuCats={menuCats} setMenuCats={setMenuCats} />}
         {tab === "cost" && <CostDetailTab costItems={costItems} setCostItems={setCostItems} />}
         {tab === "recipe" && <RecipeCostTab costItems={costItems} recipes={recipes} setRecipes={setRecipes} />}
@@ -545,10 +577,7 @@ function DashboardTab({ rangeProps, totalCash, totalTransfer, totalTip, totalRev
       d.setDate(d.getDate() - i);
       const key = d.toISOString().slice(0, 10);
       const label = d.toLocaleDateString("th-TH", { day: "numeric", month: "short" });
-      const dayRevenue = revenue.filter((r) => r.date === key).reduce((s, r) => {
-        const g = r.general || {}, b = r.bakery || {};
-        return s + Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0) + Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
-      }, 0);
+      const dayRevenue = revenue.filter((r) => r.date === key).reduce((s, r) => s + recTotalSum(r), 0);
       days.push({ label, รายรับ: dayRevenue });
     }
     return days;
@@ -681,8 +710,7 @@ function OverviewTab({ revenue, expenses }) {
     const revMap = {};
     revenue.forEach((r) => {
       const key = monthKey(r.date);
-      const g = r.general || {}, b = r.bakery || {};
-      revMap[key] = (revMap[key] || 0) + Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0) + Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
+      revMap[key] = (revMap[key] || 0) + recTotalSum(r);
     });
     const expMap = {};
     expenses.forEach((e) => { const key = monthKey(e.date); expMap[key] = (expMap[key] || 0) + Number(e.amount || 0); });
@@ -852,59 +880,75 @@ function OverviewTab({ revenue, expenses }) {
 // ---------- Revenue tab: 2 groups (ทั่วไป / เบเกอรี่) x เงินสด/โอน/ทิป, + สรุปรายเดือน ----------
 function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced }) {
   const [date, setDate] = useState(todayStr());
-  const [gCash, setGCash] = useState(""); const [gTransfer, setGTransfer] = useState(""); const [gTip, setGTip] = useState("");
+  const [tCash, setTCash] = useState(""); const [tTransfer, setTTransfer] = useState(""); const [tTip, setTTip] = useState("");
   const [bCash, setBCash] = useState(""); const [bTransfer, setBTransfer] = useState(""); const [bTip, setBTip] = useState("");
+  const [fCash, setFCash] = useState(""); const [fTransfer, setFTransfer] = useState(""); const [fTip, setFTip] = useState("");
 
   const addRevenue = () => {
-    const hasAny = [gCash, gTransfer, gTip, bCash, bTransfer, bTip].some((v) => v !== "");
+    const hasAny = [tCash, tTransfer, tTip].some((v) => v !== "");
     if (!hasAny) return;
     addRevenueSynced({
       date,
-      general: { cash: Number(gCash) || 0, transfer: Number(gTransfer) || 0, tip: Number(gTip) || 0 },
+      total: { cash: Number(tCash) || 0, transfer: Number(tTransfer) || 0, tip: Number(tTip) || 0 },
       bakery: { cash: Number(bCash) || 0, transfer: Number(bTransfer) || 0, tip: Number(bTip) || 0 },
+      food: { cash: Number(fCash) || 0, transfer: Number(fTransfer) || 0, tip: Number(fTip) || 0 },
     });
-    setGCash(""); setGTransfer(""); setGTip(""); setBCash(""); setBTransfer(""); setBTip("");
+    setTCash(""); setTTransfer(""); setTTip(""); setBCash(""); setBTransfer(""); setBTip(""); setFCash(""); setFTransfer(""); setFTip("");
   };
   const removeRevenue = (id) => removeRevenueSynced(id);
   const sorted = [...revenue].sort((a, b) => (a.date < b.date ? 1 : -1));
 
+  // สรุปรายเดือนแบบเต็ม (ทุกเดือนที่มีข้อมูล) — ใช้กับกราฟ/กล่องสรุปทั้งหมดตั้งแต่เปิดร้าน
   const monthly = useMemo(() => {
     const map = {};
     revenue.forEach((r) => {
       const key = monthKey(r.date);
-      if (!map[key]) map[key] = { general: 0, bakery: 0 };
-      const g = r.general || {}, b = r.bakery || {};
-      map[key].general += Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0);
-      map[key].bakery += Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
+      if (!map[key]) map[key] = { bakery: 0, food: 0, drink: 0, total: 0 };
+      map[key].bakery += grpSum(r.bakery);
+      map[key].food += grpSum(r.food);
+      map[key].drink += grpSum(computeDrinkGroup(r));
+      map[key].total += recTotalSum(r);
     });
     return Object.entries(map).sort((a, b) => (a[0] < b[0] ? 1 : -1));
   }, [revenue]);
 
-  const allTimeTotal = useMemo(() => monthly.reduce((s, [, v]) => s + v.general + v.bakery, 0), [monthly]);
+  const allTimeTotal = useMemo(() => monthly.reduce((s, [, v]) => s + v.total, 0), [monthly]);
 
   const availableMonths = useMemo(() => monthly.map(([k]) => k).sort((a, b) => (a > b ? 1 : -1)), [monthly]);
   const [selectedMonth, setSelectedMonth] = useState(monthKey(todayStr()));
   const [dailyTarget, setDailyTarget] = useState(DAILY_TARGET);
   const [monthlyTarget, setMonthlyTarget] = useState(MONTHLY_TARGET);
 
-  // ตัวกรองตารางบันทึกยอดขายรายวัน: เลือกเดือน หรือกำหนดช่วงวันที่เอง
+  // ตัวกรองตาราง: เลือกเดือน หรือกำหนดช่วงวันที่เอง — ใช้กับทั้งตารางรายวันและตารางสรุปรายเดือน
   const [listUseCustomRange, setListUseCustomRange] = useState(false);
   const [listRangeFrom, setListRangeFrom] = useState(todayStr());
   const [listRangeTo, setListRangeTo] = useState(todayStr());
 
   const filteredSorted = useMemo(() => {
-    if (listUseCustomRange) {
-      return sorted.filter((r) => r.date >= listRangeFrom && r.date <= listRangeTo);
-    }
+    if (listUseCustomRange) return sorted.filter((r) => r.date >= listRangeFrom && r.date <= listRangeTo);
     return sorted.filter((r) => monthKey(r.date) === selectedMonth);
   }, [sorted, listUseCustomRange, listRangeFrom, listRangeTo, selectedMonth]);
 
+  // สรุปยอดขายรายเดือน (ตามตัวกรองด้านบน) + แถวรวมท้ายตาราง
+  const filteredMonthlySummary = useMemo(() => {
+    const map = {};
+    filteredSorted.forEach((r) => {
+      const key = monthKey(r.date);
+      if (!map[key]) map[key] = { bakery: 0, food: 0, drink: 0, total: 0 };
+      map[key].bakery += grpSum(r.bakery);
+      map[key].food += grpSum(r.food);
+      map[key].drink += grpSum(computeDrinkGroup(r));
+      map[key].total += recTotalSum(r);
+    });
+    return Object.entries(map).sort((a, b) => (a[0] < b[0] ? 1 : -1));
+  }, [filteredSorted]);
+  const filteredGrandTotal = filteredMonthlySummary.reduce((acc, [, v]) => ({
+    bakery: acc.bakery + v.bakery, food: acc.food + v.food, drink: acc.drink + v.drink, total: acc.total + v.total,
+  }), { bakery: 0, food: 0, drink: 0, total: 0 });
+
   const dailyTotalMap = useMemo(() => {
     const map = {};
-    revenue.forEach((r) => {
-      const g = r.general || {}, b = r.bakery || {};
-      map[r.date] = (map[r.date] || 0) + Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0) + Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
-    });
+    revenue.forEach((r) => { map[r.date] = (map[r.date] || 0) + recTotalSum(r); });
     return map;
   }, [revenue]);
 
@@ -921,14 +965,14 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
   }, [selectedMonth, dailyTotalMap]);
 
   const monthlyChartData = useMemo(
-    () => [...monthly].sort((a, b) => (a[0] > b[0] ? 1 : -1)).map(([key, v]) => ({ month: monthLabel(key), ยอดขาย: v.general + v.bakery })),
+    () => [...monthly].sort((a, b) => (a[0] > b[0] ? 1 : -1)).map(([key, v]) => ({ month: monthLabel(key), ยอดขาย: v.total })),
     [monthly]
   );
 
   const daysMeetingTarget = dailyChartData.filter((d) => d.ยอดขาย >= dailyTarget).length;
   const daysWithSales = dailyChartData.filter((d) => d.ยอดขาย > 0).length;
   const selectedMonthTotal = monthly.find(([k]) => k === selectedMonth)?.[1];
-  const selectedMonthSum = selectedMonthTotal ? selectedMonthTotal.general + selectedMonthTotal.bakery : 0;
+  const selectedMonthSum = selectedMonthTotal ? selectedMonthTotal.total : 0;
   const monthOptions = availableMonths.includes(selectedMonth) ? availableMonths : [...availableMonths, selectedMonth].sort();
 
   const exportRef = useRef(null);
@@ -940,31 +984,39 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
         <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>บันทึกยอดขายรายวัน</h1>
         <ExportButtons targetRef={exportRef} filename="บันทึกยอดขายรายวัน" />
       </div>
-      <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>กรอกยอดรวมต่อวัน แยกเป็น "เมนูทั่วไป" และ "เบเกอรี่" แต่ละกลุ่มแยกเงินสด / เงินโอน / ทิป</p>
-
+      <p style={{ margin: "0 0 20px", color: "#8A6E45", fontSize: 15 }}>กรอกยอดขาย 3 ส่วน: ยอดขายทั้งหมด / เบเกอรี่ / เมนูอาหาร — ระบบคำนวณ "เมนูน้ำ" ให้อัตโนมัติจากส่วนต่าง</p>
 
       <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, marginBottom: 22 }}>
-        <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: 16 }} /></Field>
+        <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={{ ...inputStyle, marginBottom: 16, width: 200 }} /></Field>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 18 }}>
           <div>
-            <h4 style={{ fontSize: 14, fontWeight: 600, color: "#4A320F", margin: "0 0 10px" }}>ยอดขายเมนูทั่วไป</h4>
+            <h4 style={{ fontSize: 14, fontWeight: 700, color: "#4A320F", margin: "0 0 10px" }}>ยอดขายทั้งหมด</h4>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Field label="เงินสด"><input type="number" min={0} value={gCash} onChange={(e) => setGCash(e.target.value)} style={{ ...inputStyle, width: 100 }} /></Field>
-              <Field label="เงินโอน"><input type="number" min={0} value={gTransfer} onChange={(e) => setGTransfer(e.target.value)} style={{ ...inputStyle, width: 100 }} /></Field>
-              <Field label="ทิป"><input type="number" min={0} value={gTip} onChange={(e) => setGTip(e.target.value)} style={{ ...inputStyle, width: 90 }} /></Field>
+              <Field label="เงินสด"><input type="number" min={0} value={tCash} onChange={(e) => setTCash(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="เงินโอน"><input type="number" min={0} value={tTransfer} onChange={(e) => setTTransfer(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="ทิป"><input type="number" min={0} value={tTip} onChange={(e) => setTTip(e.target.value)} style={{ ...inputStyle, width: 85 }} /></Field>
             </div>
           </div>
           <div>
-            <h4 style={{ fontSize: 14, fontWeight: 600, color: "#E3A730", margin: "0 0 10px" }}>ยอดขายเบเกอรี่</h4>
+            <h4 style={{ fontSize: 14, fontWeight: 700, color: "#E3A730", margin: "0 0 10px" }}>ยอดขายเบเกอรี่</h4>
             <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-              <Field label="เงินสด"><input type="number" min={0} value={bCash} onChange={(e) => setBCash(e.target.value)} style={{ ...inputStyle, width: 100 }} /></Field>
-              <Field label="เงินโอน"><input type="number" min={0} value={bTransfer} onChange={(e) => setBTransfer(e.target.value)} style={{ ...inputStyle, width: 100 }} /></Field>
-              <Field label="ทิป"><input type="number" min={0} value={bTip} onChange={(e) => setBTip(e.target.value)} style={{ ...inputStyle, width: 90 }} /></Field>
+              <Field label="เงินสด"><input type="number" min={0} value={bCash} onChange={(e) => setBCash(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="เงินโอน"><input type="number" min={0} value={bTransfer} onChange={(e) => setBTransfer(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="ทิป"><input type="number" min={0} value={bTip} onChange={(e) => setBTip(e.target.value)} style={{ ...inputStyle, width: 85 }} /></Field>
+            </div>
+          </div>
+          <div>
+            <h4 style={{ fontSize: 14, fontWeight: 700, color: "#B23A2E", margin: "0 0 10px" }}>ยอดขายเมนูอาหาร</h4>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+              <Field label="เงินสด"><input type="number" min={0} value={fCash} onChange={(e) => setFCash(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="เงินโอน"><input type="number" min={0} value={fTransfer} onChange={(e) => setFTransfer(e.target.value)} style={{ ...inputStyle, width: 95 }} /></Field>
+              <Field label="ทิป"><input type="number" min={0} value={fTip} onChange={(e) => setFTip(e.target.value)} style={{ ...inputStyle, width: 85 }} /></Field>
             </div>
           </div>
         </div>
-        <button onClick={addRevenue} style={{ ...primaryBtn, marginTop: 16 }}><Plus size={16} /> บันทึกยอดวันนี้</button>
+        <p style={{ margin: "12px 0 0", fontSize: 12.5, color: "#B99B6B" }}>เมนูน้ำ = ยอดขายทั้งหมด − (เบเกอรี่ + เมนูอาหาร) — ไม่ต้องกรอกเอง ระบบคำนวณให้อัตโนมัติ</p>
+        <button onClick={addRevenue} style={{ ...primaryBtn, marginTop: 14 }}><Plus size={16} /> บันทึกยอดวันนี้</button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, margin: "0 0 12px" }}>
@@ -993,22 +1045,21 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
           )}
         </div>
       </div>
-      <TableShell headers={["วันที่", "ทั่วไป (รวม)", "เบเกอรี่ (รวม)", "รวมทั้งสิ้น", ""]}>
+      <TableShell headers={["วันที่", "ยอดขายทั้งหมด", "เบเกอรี่", "อาหาร", "น้ำ (คำนวณ)", ""]}>
         {filteredSorted.map((r) => {
-          const g = r.general || {}, b = r.bakery || {};
-          const gTotal = Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0);
-          const bTotal = Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
+          const drink = computeDrinkGroup(r);
           return (
             <tr key={r.id}>
               <Td>{r.date}</Td>
-              <Td>฿{fmt(gTotal)}</Td>
-              <Td>฿{fmt(bTotal)}</Td>
-              <Td style={{ fontWeight: 600 }}>฿{fmt(gTotal + bTotal)}</Td>
+              <Td style={{ fontWeight: 600 }}>฿{fmt(recTotalSum(r))}</Td>
+              <Td>฿{fmt(grpSum(r.bakery))}</Td>
+              <Td>฿{fmt(grpSum(r.food))}</Td>
+              <Td style={{ color: "#4A320F" }}>฿{fmt(grpSum(drink))}</Td>
               <Td><DeleteBtn onClick={() => removeRevenue(r.id)} /></Td>
             </tr>
           );
         })}
-        {filteredSorted.length === 0 && <EmptyRow colSpan={5} text="ไม่มีข้อมูลยอดขายในช่วงที่เลือก" />}
+        {filteredSorted.length === 0 && <EmptyRow colSpan={6} text="ไม่มีข้อมูลยอดขายในช่วงที่เลือก" />}
       </TableShell>
 
       <div ref={monthlySummaryRef}>
@@ -1017,17 +1068,27 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
           <ExportButtons targetRef={monthlySummaryRef} filename="สรุปยอดขายรายเดือน" />
         </div>
 
-      <TableShell headers={["เดือน", "เมนูทั่วไป", "เบเกอรี่", "รวมทั้งสิ้น"]}>
-        {monthly.map(([key, v]) => (
-          <tr key={key}>
-            <Td>{monthLabel(key)}</Td>
-            <Td>฿{fmt(v.general)}</Td>
-            <Td>฿{fmt(v.bakery)}</Td>
-            <Td style={{ fontWeight: 600 }}>฿{fmt(v.general + v.bakery)}</Td>
-          </tr>
-        ))}
-        {monthly.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
-      </TableShell>
+        <TableShell headers={["เดือน", "เบเกอรี่", "อาหาร", "น้ำ", "รวมทั้งสิ้น"]}>
+          {filteredMonthlySummary.map(([key, v]) => (
+            <tr key={key}>
+              <Td>{monthLabel(key)}</Td>
+              <Td>฿{fmt(v.bakery)}</Td>
+              <Td>฿{fmt(v.food)}</Td>
+              <Td>฿{fmt(v.drink)}</Td>
+              <Td style={{ fontWeight: 600 }}>฿{fmt(v.total)}</Td>
+            </tr>
+          ))}
+          {filteredMonthlySummary.length === 0 && <EmptyRow colSpan={5} text="ไม่มีข้อมูลในช่วงที่เลือก" />}
+          {filteredMonthlySummary.length > 0 && (
+            <tr style={{ background: "#FBF3E1" }}>
+              <Td style={{ fontWeight: 700 }}>รวมทั้งหมด</Td>
+              <Td style={{ fontWeight: 700 }}>฿{fmt(filteredGrandTotal.bakery)}</Td>
+              <Td style={{ fontWeight: 700 }}>฿{fmt(filteredGrandTotal.food)}</Td>
+              <Td style={{ fontWeight: 700 }}>฿{fmt(filteredGrandTotal.drink)}</Td>
+              <Td style={{ fontWeight: 700 }}>฿{fmt(filteredGrandTotal.total)}</Td>
+            </tr>
+          )}
+        </TableShell>
       </div>
 
       {/* สรุปยอดขายประจำเดือน (เดือนที่เลือก) */}
@@ -1036,7 +1097,7 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
           <div style={{ color: "#E3A730", fontSize: 13, letterSpacing: 1, fontWeight: 600, marginBottom: 4 }}>สรุปยอดขายประจำเดือน — {monthLabel(selectedMonth)}</div>
           <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 36, fontWeight: 600, color: "#F4D793" }}>฿{fmt(selectedMonthSum)}</div>
           <div style={{ color: "#D9B979", fontSize: 13, marginTop: 4 }}>
-            เมนูทั่วไป ฿{fmt(selectedMonthTotal?.general || 0)} · เบเกอรี่ ฿{fmt(selectedMonthTotal?.bakery || 0)}
+            เบเกอรี่ ฿{fmt(selectedMonthTotal?.bakery || 0)} · อาหาร ฿{fmt(selectedMonthTotal?.food || 0)} · น้ำ ฿{fmt(selectedMonthTotal?.drink || 0)}
           </div>
           <div style={{ color: "#D9B979", fontSize: 13, marginTop: 2 }}>
             ยอดขายรวมทั้งหมดตั้งแต่เปิดร้าน ฿{fmt(allTimeTotal)} ({monthly.length} เดือน)
@@ -1056,7 +1117,6 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
           <div style={{ fontSize: 13, color: selectedMonthSum >= monthlyTarget ? "#F4D793" : "#E8998C" }}>
             {selectedMonthSum >= monthlyTarget ? "ถึง Target รายเดือนแล้ว" : `ขาดอีก ฿${fmt(monthlyTarget - selectedMonthSum)}`}
           </div>
-
         </div>
       </div>
 
@@ -1138,7 +1198,7 @@ function RevenueTab({ revenue, setRevenue, addRevenueSynced, removeRevenueSynced
 }
 
 // ---------- Expenses tab: 6 หมวดหลัก + ตำแหน่งพนักงาน 5 ตำแหน่ง + หมวดย่อย ----------
-function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSynced, staffPositions, setStaffPositions, rangeProps, totalRevenue, filteredExpenses, revenue }) {
+function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSynced, updateExpenseSynced, staffPositions, setStaffPositions, rangeProps, totalRevenue, filteredExpenses, revenue }) {
   const [date, setDate] = useState(todayStr());
   const [category, setCategory] = useState(RENT);
   const [subcategory, setSubcategory] = useState("");
@@ -1150,6 +1210,7 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
   const [receiptImage, setReceiptImage] = useState(null);
   const [receiptName, setReceiptName] = useState("");
   const [lightboxImage, setLightboxImage] = useState(null);
+  const [editingId, setEditingId] = useState(null);
 
   const onReceiptSelect = (file) => {
     if (!file) return;
@@ -1193,14 +1254,28 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
   const onStaffCountChange = (val) => { setStaffCount(val); recalcStaffAmount(subcategory, val, commission); };
   const onCommissionChange = (val) => { setCommission(val); recalcStaffAmount(subcategory, staffCount, val); };
 
-  const addExpense = () => {
+  const resetForm = () => {
+    setEditingId(null); setDate(todayStr()); setCategory(RENT); setSubcategory("");
+    setAmount(""); setNote(""); setCommission(""); setStaffCount(1); clearReceipt();
+  };
+
+  const submitExpense = () => {
     if (!amount || Number(amount) <= 0) return;
     const record = { date, category, subcategory, amount: Number(amount), note, receiptImage };
     if (category === STAFF) { record.count = Number(staffCount) || 1; record.commission = Number(commission) || 0; record.unit = selectedStaffUnit; }
-    addExpenseSynced(record);
-    setAmount(""); setNote(""); setCommission(""); clearReceipt();
+    if (editingId) {
+      updateExpenseSynced(editingId, record);
+    } else {
+      addExpenseSynced(record);
+    }
+    resetForm();
   };
-  const removeExpense = (id) => removeExpenseSynced(id);
+  const startEdit = (e) => {
+    setEditingId(e.id); setDate(e.date); setCategory(e.category); setSubcategory(e.subcategory || "");
+    setAmount(String(e.amount)); setNote(e.note || ""); setCommission(e.commission ? String(e.commission) : "");
+    setStaffCount(e.count || 1); setReceiptImage(e.receiptImage || null);
+  };
+  const removeExpense = (id) => { removeExpenseSynced(id); if (editingId === id) resetForm(); };
   const sorted = [...expenses].sort((a, b) => (a.date < b.date ? 1 : -1));
 
   // ตัวกรองตารางบันทึกรายจ่าย: เลือกเดือน หรือกำหนดช่วงวันที่เอง
@@ -1224,17 +1299,22 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
   const updatePosition = (id, field, val) => {
     setStaffPositions(staffPositions.map((p) => (p.id === id ? { ...p, [field]: (field === "rate" || field === "count") ? Number(val) || 0 : val } : p)));
   };
+  const addPosition = () => setStaffPositions([...staffPositions, { id: `p${Date.now()}`, name: "ตำแหน่งใหม่", rate: 0, count: 1, unit: "คน", note: "" }]);
+  const removePosition = (id) => setStaffPositions(staffPositions.filter((p) => p.id !== id));
 
-  // สรุปผลรวมรายจ่ายแต่ละหมวด (6 หมวดหลัก) + % เทียบยอดขาย ตามช่วงวันที่ที่เลือก
+  // สรุปผลรวมรายจ่ายแต่ละหมวด — เงินทุนหมุนเวียนแยกย่อยตาม บาร์/ครัว/เค้ก/ส่วนกลาง + % เทียบยอดขาย
   const categorySummary = useMemo(() => {
-    const map = {};
-    expenseMainCategories.forEach((c) => { map[c.key] = 0; });
-    filteredExpenses.forEach((e) => { if (map[e.category] !== undefined) map[e.category] += Number(e.amount || 0); });
-    return expenseMainCategories.map((c) => ({
-      label: c.key,
-      amount: map[c.key],
-      pct: totalRevenue ? (map[c.key] / totalRevenue) * 100 : 0,
-    }));
+    const rows = [];
+    [RENT, STAFF, UTILITIES].forEach((cat) => {
+      rows.push({ label: cat, amount: filteredExpenses.filter((e) => e.category === cat).reduce((s, e) => s + Number(e.amount || 0), 0) });
+    });
+    WC_SUBS.forEach((sub) => {
+      rows.push({ label: `เงินทุนหมุนเวียน — ${sub}`, amount: filteredExpenses.filter((e) => e.category === WORKING_CAPITAL && e.subcategory === sub).reduce((s, e) => s + Number(e.amount || 0), 0) });
+    });
+    [TAX, RESERVE].forEach((cat) => {
+      rows.push({ label: cat, amount: filteredExpenses.filter((e) => e.category === cat).reduce((s, e) => s + Number(e.amount || 0), 0) });
+    });
+    return rows.map((r) => ({ ...r, pct: totalRevenue ? (r.amount / totalRevenue) * 100 : 0 }));
   }, [filteredExpenses, totalRevenue]);
   const categoryTotal = categorySummary.reduce((s, c) => s + c.amount, 0);
   const categoryTotalPct = totalRevenue ? (categoryTotal / totalRevenue) * 100 : 0;
@@ -1246,8 +1326,7 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
     const revMap = {};
     revenue.forEach((r) => {
       const k = monthKey(r.date);
-      const g = r.general || {}, b = r.bakery || {};
-      revMap[k] = (revMap[k] || 0) + Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0) + Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
+      revMap[k] = (revMap[k] || 0) + recTotalSum(r);
     });
     const allKeys = [...new Set([...Object.keys(expMap), ...Object.keys(revMap)])].sort();
     return allKeys.map((key) => ({
@@ -1273,28 +1352,31 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
       <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 16, marginBottom: 14 }}>
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: showStaffPanel ? 10 : 0 }}>
           <h3 style={{ fontSize: 14, fontWeight: 600, color: "#6B4F2A", margin: 0, display: "flex", alignItems: "center", gap: 6 }}>
-            <Users size={14} /> ตำแหน่งพนักงานและอัตราค่าจ้าง (5 ตำแหน่ง)
+            <Users size={14} /> ตำแหน่งพนักงานและอัตราค่าจ้าง ({staffPositions.length} ตำแหน่ง)
           </h3>
-          <button onClick={() => setShowStaffPanel(!showStaffPanel)} style={{ ...primaryBtn, padding: "6px 12px", fontSize: 13.5, background: showStaffPanel ? "#FBF3E1" : "#2E1F0D", color: showStaffPanel ? "#6B4F2A" : "#FBF3E1", border: showStaffPanel ? "1px solid #EADFC4" : "none" }}>
-            {showStaffPanel ? "ซ่อน" : "แก้ไขค่าจ้าง"}
-          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            {showStaffPanel && <button onClick={addPosition} style={{ ...primaryBtn, padding: "6px 12px", fontSize: 13 }}><Plus size={14} /> เพิ่มตำแหน่ง</button>}
+            <button onClick={() => setShowStaffPanel(!showStaffPanel)} style={{ ...primaryBtn, padding: "6px 12px", fontSize: 13.5, background: showStaffPanel ? "#FBF3E1" : "#2E1F0D", color: showStaffPanel ? "#6B4F2A" : "#FBF3E1", border: showStaffPanel ? "1px solid #EADFC4" : "none" }}>
+              {showStaffPanel ? "ซ่อน" : "แก้ไขค่าจ้าง"}
+            </button>
+          </div>
         </div>
         {showStaffPanel && (
           <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 4 }}>
             {staffPositions.map((p) => (
-              <div key={p.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-                <input type="text" value={p.name} onChange={(e) => updatePosition(p.id, "name", e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 140 }} />
+              <div key={p.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "6px 0", borderBottom: "1px solid #F1E7D0" }}>
+                <input type="text" value={p.name} onChange={(e) => updatePosition(p.id, "name", e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 130 }} />
                 <span style={{ fontSize: 13.5, color: "#8A6E45" }}>ค่าจ้าง/{p.unit || "คน"}</span>
-                <input type="number" min={0} value={p.rate} onChange={(e) => updatePosition(p.id, "rate", e.target.value)} style={{ ...inputStyle, width: 100, textAlign: "right" }} />
+                <input type="number" min={0} value={p.rate} onChange={(e) => updatePosition(p.id, "rate", e.target.value)} style={{ ...inputStyle, width: 90, textAlign: "right" }} />
                 <span style={{ fontSize: 13.5, color: "#8A6E45" }}>บาท</span>
-                <span style={{ fontSize: 13.5, color: "#8A6E45" }}>หน่วย</span>
-                <select value={p.unit || "คน"} onChange={(e) => updatePosition(p.id, "unit", e.target.value)} style={{ ...inputStyle, width: 80 }}>
+                <select value={p.unit || "คน"} onChange={(e) => updatePosition(p.id, "unit", e.target.value)} style={{ ...inputStyle, width: 75 }}>
                   <option value="คน">คน</option>
                   <option value="วัน">วัน</option>
                 </select>
-                <span style={{ fontSize: 13.5, color: "#8A6E45" }}>จำนวน{p.unit || "คน"}ตั้งต้น</span>
-                <input type="number" min={0} value={p.count} onChange={(e) => updatePosition(p.id, "count", e.target.value)} style={{ ...inputStyle, width: 70, textAlign: "right" }} />
+                <input type="number" min={0} value={p.count} onChange={(e) => updatePosition(p.id, "count", e.target.value)} style={{ ...inputStyle, width: 60, textAlign: "right" }} />
+                <input type="text" placeholder="หมายเหตุ" value={p.note || ""} onChange={(e) => updatePosition(p.id, "note", e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: 120 }} />
                 <span style={{ fontSize: 13, color: "#B99B6B" }}>รวม ฿{fmt(p.rate * p.count)}</span>
+                <DeleteBtn onClick={() => removePosition(p.id)} />
               </div>
             ))}
           </div>
@@ -1302,7 +1384,15 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
       </div>
 
       {/* ฟอร์มเพิ่มรายจ่าย */}
-      <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, display: "flex", gap: 12, alignItems: "end", marginBottom: 22, flexWrap: "wrap" }}>
+      {editingId && (
+        <div style={{ marginBottom: 8, fontSize: 13, color: "#8A4A12", display: "flex", alignItems: "center", gap: 8 }}>
+          กำลังแก้ไขรายการ
+          <button onClick={resetForm} style={{ background: "transparent", border: "none", color: "#B23A2E", cursor: "pointer", display: "flex", alignItems: "center", gap: 3, fontSize: 13 }}>
+            <X size={13} /> ยกเลิก
+          </button>
+        </div>
+      )}
+      <div style={{ background: "#FFFFFF", border: `1px solid ${editingId ? "#E3A730" : "#EADFC4"}`, borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18, display: "flex", gap: 12, alignItems: "end", marginBottom: 22, flexWrap: "wrap" }}>
         <Field label="วันที่"><input type="date" value={date} onChange={(e) => setDate(e.target.value)} style={inputStyle} /></Field>
         <Field label="หมวดหมู่หลัก">
           <select value={category} onChange={(e) => onCategoryChange(e.target.value)} style={{ ...inputStyle, minWidth: 190 }}>
@@ -1353,7 +1443,7 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
             </button>
           </div>
         )}
-        <button onClick={addExpense} style={primaryBtn}><Plus size={16} /> เพิ่มรายจ่าย</button>
+        <button onClick={submitExpense} style={primaryBtn}>{editingId ? <><Pencil size={15} /> บันทึกการแก้ไข</> : <><Plus size={16} /> เพิ่มรายจ่าย</>}</button>
       </div>
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, margin: "0 0 12px" }}>
@@ -1382,9 +1472,9 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
           )}
         </div>
       </div>
-      <TableShell headers={["วันที่", "หมวดหมู่", "รายละเอียด", "จำนวนเงิน", "หมายเหตุ", "หลักฐาน", ""]}>
+      <TableShell headers={["วันที่", "หมวดหมู่", "รายละเอียด", "จำนวนเงิน", "หมายเหตุ", "หลักฐาน", "", ""]}>
         {filteredSorted.map((e) => (
-          <tr key={e.id}>
+          <tr key={e.id} style={{ background: editingId === e.id ? "#FBEFD6" : "transparent" }}>
             <Td>{e.date}</Td>
             <Td>{e.category}</Td>
             <Td style={{ color: "#8A6E45" }}>
@@ -1404,10 +1494,11 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
                 <span style={{ color: "#C9B896", fontSize: 13 }}>—</span>
               )}
             </Td>
+            <Td><EditBtn onClick={() => startEdit(e)} /></Td>
             <Td><DeleteBtn onClick={() => removeExpense(e.id)} /></Td>
           </tr>
         ))}
-        {filteredSorted.length === 0 && <EmptyRow colSpan={7} text="ไม่มีรายการรายจ่ายในช่วงที่เลือก" />}
+        {filteredSorted.length === 0 && <EmptyRow colSpan={8} text="ไม่มีรายการรายจ่ายในช่วงที่เลือก" />}
       </TableShell>
 
 
@@ -1494,73 +1585,60 @@ function ExpensesTab({ expenses, setExpenses, addExpenseSynced, removeExpenseSyn
 }
 
 // ---------- สรุปรายได้-รายจ่าย + แบ่งกำไรท้ายเดือน ----------
-function SplitTab({ rangeProps, generalTotal, bakeryTotal, totalRevenue, totalExpenses, menu, revenue, expenses, filteredExpenses }) {
-  const [generalPct, setGeneralPct] = useState(30);
-  const [taxPct, setTaxPct] = useState(5);
-  const [reservePct, setReservePct] = useState(3);
+function SplitTab({ rangeProps, generalTotal, bakeryTotal, foodTotal, drinkTotal, totalRevenue, totalExpenses, menu, revenue, expenses, filteredExpenses }) {
   const [partners, setPartners] = useState([
-    { id: "pt1", name: "คุณแบงค์", pct: 76 },
-    { id: "pt2", name: "คุณต้น", pct: 24 },
+    { id: "pt1", name: "พี่แบงค์", pct: 76 },
+    { id: "pt2", name: "พี่ต้น", pct: 24 },
   ]);
 
-  const bakeryItems = menu.filter((m) => m.category === BAKERY);
-  const avgBakeryMarginPct = bakeryItems.length
-    ? bakeryItems.reduce((s, m) => s + (m.price ? (m.price - m.cost) / m.price : 0), 0) / bakeryItems.length
-    : 0;
-  const avgBakeryCostPct = 1 - avgBakeryMarginPct;
+  const isBakeryWC = (e) => e.category === WORKING_CAPITAL && e.subcategory === "เค้ก";
 
-  // รายจ่ายทั้งหมด (ตามช่วงวันที่ที่เลือก) ยกเว้นเงินทุนหมุนเวียนเบเกอรี่:
-  // ค่าเช่า+ค่าจ้างพนักงาน+สาธารณูปโภค (จากรายการจริง) + เงินทุนหมุนเวียนทั่วไป + ภาษี + เงินทุนสำรอง (คำนวณจาก %)
-  const actualRentStaffUtil = filteredExpenses
-    .filter((e) => e.category === RENT || e.category === STAFF || e.category === UTILITIES)
-    .reduce((s, e) => s + Number(e.amount || 0), 0);
-  const rangeWorkingCapitalGeneral = generalTotal * (generalPct / 100);
-  const rangeTax = totalRevenue * (taxPct / 100);
-  const rangeReserve = totalRevenue * (reservePct / 100);
-  const expensesExcludingBakeryWC = actualRentStaffUtil + rangeWorkingCapitalGeneral + rangeTax + rangeReserve;
+  // ตาราง 1 (ตามช่วงวันที่ที่เลือกด้านบน) — ตัดเงินทุนหมุนเวียนเบเกอรี่ออก ยอดขาย = อาหาร+น้ำ
+  const table1ExpenseRange = filteredExpenses.filter((e) => !isBakeryWC(e)).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const table1Net = generalTotal - table1ExpenseRange;
 
-  const generalProfit = generalTotal - expensesExcludingBakeryWC;
-  const bakeryProfit = bakeryTotal * avgBakeryMarginPct;
+  // ตาราง 2 (เบเกอรี่ล้วน ตามช่วงวันที่ที่เลือก)
+  const table2ExpenseRange = filteredExpenses.filter(isBakeryWC).reduce((s, e) => s + Number(e.amount || 0), 0);
+  const table2Net = bakeryTotal - table2ExpenseRange;
 
-  // รายได้สรุปประจำเดือน
+  // รายได้สรุปประจำเดือน (ทุกเดือนที่มีข้อมูล)
   const monthlyRevenue = useMemo(() => {
     const map = {};
     revenue.forEach((r) => {
       const key = monthKey(r.date);
-      if (!map[key]) map[key] = { general: 0, bakery: 0 };
-      const g = r.general || {}, b = r.bakery || {};
-      map[key].general += Number(g.cash || 0) + Number(g.transfer || 0) + Number(g.tip || 0);
-      map[key].bakery += Number(b.cash || 0) + Number(b.transfer || 0) + Number(b.tip || 0);
+      if (!map[key]) map[key] = { bakery: 0, food: 0, drink: 0 };
+      map[key].bakery += grpSum(r.bakery);
+      map[key].food += grpSum(r.food);
+      map[key].drink += grpSum(computeDrinkGroup(r));
     });
     return map;
   }, [revenue]);
+  const monthlyRevenueRows = Object.entries(monthlyRevenue).sort((a, b) => (a[0] < b[0] ? 1 : -1));
 
-  // รายจ่ายสรุปประจำเดือน — ค่าเช่า/ค่าจ้างพนักงาน/ค่าสาธารณูปโภค จากรายการจริง
-  // เงินทุนหมุนเวียน/ภาษี/เงินทุนสำรอง คำนวณจากยอดขายเดือนนั้นตาม % ที่ตั้งไว้
+  // รายจ่ายประจำเดือน — ตาราง 1 (ไม่รวมเบเกอรี่) และตาราง 2 (เบเกอรี่ล้วน)
   const monthlyBreakdown = useMemo(() => {
-    const actualMap = {};
+    const expTable1 = {}, expTable2 = {};
     expenses.forEach((e) => {
       const key = monthKey(e.date);
-      if (!actualMap[key]) actualMap[key] = { [RENT]: 0, [STAFF]: 0, [UTILITIES]: 0 };
-      if (actualMap[key][e.category] !== undefined) actualMap[key][e.category] += Number(e.amount || 0);
+      if (isBakeryWC(e)) expTable2[key] = (expTable2[key] || 0) + Number(e.amount || 0);
+      else expTable1[key] = (expTable1[key] || 0) + Number(e.amount || 0);
     });
-    const allMonths = new Set([...Object.keys(actualMap), ...Object.keys(monthlyRevenue)]);
+    const allMonths = new Set([...Object.keys(expTable1), ...Object.keys(expTable2), ...Object.keys(monthlyRevenue)]);
     return [...allMonths].sort((a, b) => (a < b ? 1 : -1)).map((key) => {
-      const a = actualMap[key] || { [RENT]: 0, [STAFF]: 0, [UTILITIES]: 0 };
-      const rev = monthlyRevenue[key] || { general: 0, bakery: 0 };
-      const workingCapitalGeneral = rev.general * (generalPct / 100);
-      const workingCapitalBakery = rev.bakery * avgBakeryCostPct;
-      const workingCapital = workingCapitalGeneral + workingCapitalBakery;
-      const revTotal = rev.general + rev.bakery;
-      const tax = revTotal * (taxPct / 100);
-      const reserve = revTotal * (reservePct / 100);
-      const total = a[RENT] + a[STAFF] + a[UTILITIES] + workingCapital + tax + reserve;
-      return { key, rent: a[RENT], staff: a[STAFF], utilities: a[UTILITIES], workingCapitalGeneral, workingCapitalBakery, workingCapital, tax, reserve, total, revTotal };
+      const rev = monthlyRevenue[key] || { bakery: 0, food: 0, drink: 0 };
+      const revGeneral = rev.food + rev.drink;
+      const exp1 = expTable1[key] || 0;
+      const exp2 = expTable2[key] || 0;
+      return {
+        key,
+        revGeneral, exp1, net1: revGeneral - exp1,
+        revBakery: rev.bakery, exp2, net2: rev.bakery - exp2,
+      };
     });
-  }, [expenses, monthlyRevenue, generalPct, avgBakeryCostPct, taxPct, reservePct]);
+  }, [expenses, monthlyRevenue]);
 
-  const monthlyRevenueRows = Object.entries(monthlyRevenue).sort((a, b) => (a[0] < b[0] ? 1 : -1));
-  const allTimeNetProfit = monthlyBreakdown.reduce((s, m) => s + (m.revTotal - m.total), 0);
+  const allTimeNet1 = monthlyBreakdown.reduce((s, m) => s + m.net1, 0);
+  const allTimeNet2 = monthlyBreakdown.reduce((s, m) => s + m.net2, 0);
   const partnerPctTotal = partners.reduce((s, p) => s + p.pct, 0);
   const updatePartner = (id, field, val) => {
     setPartners(partners.map((p) => (p.id === id ? { ...p, [field]: field === "pct" ? Number(val) || 0 : val } : p)));
@@ -1577,74 +1655,61 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, totalRevenue, totalEx
           <ExportButtons targetRef={exportRef} filename="สรุปรายได้-รายจ่าย" />
         </div>
       </div>
-      <p style={{ margin: "4px 0 20px", color: "#8A6E45", fontSize: 15 }}>รายได้และรายจ่ายรายเดือน แล้ววิเคราะห์กำไรแยก 2 กลุ่มเมนู</p>
+      <p style={{ margin: "4px 0 20px", color: "#8A6E45", fontSize: 15 }}>แยกรายงานเบเกอรี่ออกจากเมนูทั่วไป (อาหาร+เครื่องดื่ม) ทั้งฝั่งรายได้และรายจ่าย</p>
 
       <h3 style={{ fontSize: 16, fontWeight: 600, margin: "0 0 10px", fontFamily: "'Roboto', sans-serif" }}>รายได้สรุปประจำเดือน</h3>
-      <TableShell headers={["เดือน", "เมนูทั่วไป", "เบเกอรี่", "รวมทั้งสิ้น"]}>
+      <TableShell headers={["เดือน", "เบเกอรี่", "เมนูอาหาร", "เมนูน้ำ", "รวมทั้งสิ้น"]}>
         {monthlyRevenueRows.map(([key, v]) => (
           <tr key={key}>
             <Td>{monthLabel(key)}</Td>
-            <Td>฿{fmt(v.general)}</Td>
             <Td>฿{fmt(v.bakery)}</Td>
-            <Td style={{ fontWeight: 600 }}>฿{fmt(v.general + v.bakery)}</Td>
+            <Td>฿{fmt(v.food)}</Td>
+            <Td>฿{fmt(v.drink)}</Td>
+            <Td style={{ fontWeight: 600 }}>฿{fmt(v.bakery + v.food + v.drink)}</Td>
           </tr>
         ))}
-        {monthlyRevenueRows.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
+        {monthlyRevenueRows.length === 0 && <EmptyRow colSpan={5} text="ยังไม่มีข้อมูล" />}
       </TableShell>
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", margin: "26px 0 10px", flexWrap: "wrap", gap: 10 }}>
-        <h3 style={{ fontSize: 16, fontWeight: 600, margin: 0, fontFamily: "'Roboto', sans-serif" }}>รายจ่ายสรุปประจำเดือน</h3>
-        <div style={{ display: "flex", gap: 14, alignItems: "center", fontSize: 13.5, color: "#8A6E45" }}>
-          <span>เงินทุนหมุนเวียน (เมนูทั่วไป) <input type="number" min={0} max={100} value={generalPct} onChange={(e) => setGeneralPct(Number(e.target.value))} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
-          <span>ภาษี <input type="number" min={0} max={100} value={taxPct} onChange={(e) => setTaxPct(Number(e.target.value))} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
-          <span>สำรอง <input type="number" min={0} max={100} value={reservePct} onChange={(e) => setReservePct(Number(e.target.value))} style={{ ...inputStyle, width: 55, textAlign: "right", padding: "4px 6px" }} />%</span>
-        </div>
-      </div>
-      <p style={{ margin: "0 0 10px", color: "#B99B6B", fontSize: 13 }}>
-        ค่าเช่า / ค่าจ้างพนักงาน / ค่าสาธารณูปโภค รวมจากรายการที่บันทึกจริง — เงินทุนหมุนเวียน / ภาษี / เงินทุนสำรอง คำนวณจากยอดขายเดือนนั้นตาม % ด้านบน (เบเกอรี่ใช้ต้นทุนจริงเฉลี่ย {(avgBakeryCostPct * 100).toFixed(1)}% แทน)
-      </p>
-      <TableShell headers={["เดือน", "ค่าเช่า", "ค่าจ้างพนักงาน", "สาธารณูปโภค", "เงินทุนหมุนเวียนทั่วไป", "เงินทุนหมุนเวียนเบเกอรี่", "ภาษี", "เงินทุนสำรอง", "รวมรายจ่าย", "กำไรสุทธิ"]}>
+      <h3 style={{ fontSize: 16, fontWeight: 600, margin: "26px 0 10px", fontFamily: "'Roboto', sans-serif" }}>รายจ่ายประจำเดือน — ตาราง 1 (เมนูทั่วไป ไม่รวมเบเกอรี่)</h3>
+      <p style={{ margin: "0 0 10px", color: "#B99B6B", fontSize: 13 }}>ตัดเงินทุนหมุนเวียนหมวดเค้ก (เบเกอรี่) ออก — ยอดขายที่ใช้คำนวณ = เมนูอาหาร + เมนูน้ำ</p>
+      <TableShell headers={["เดือน", "ยอดขาย (อาหาร+น้ำ)", "รายจ่ายรวม (ไม่รวมเค้ก)", "กำไรสุทธิ"]}>
         {monthlyBreakdown.map((m) => (
           <tr key={m.key}>
             <Td>{monthLabel(m.key)}</Td>
-            <Td>฿{fmt(m.rent)}</Td>
-            <Td>฿{fmt(m.staff)}</Td>
-            <Td>฿{fmt(m.utilities)}</Td>
-            <Td>฿{fmt(m.workingCapitalGeneral)}</Td>
-            <Td>฿{fmt(m.workingCapitalBakery)}</Td>
-            <Td>฿{fmt(m.tax)}</Td>
-            <Td>฿{fmt(m.reserve)}</Td>
-            <Td style={{ fontWeight: 600, color: "#B23A2E" }}>−฿{fmt(m.total)}</Td>
-            <Td style={{ fontWeight: 600, color: m.revTotal - m.total >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.revTotal - m.total)}</Td>
+            <Td>฿{fmt(m.revGeneral)}</Td>
+            <Td style={{ color: "#B23A2E" }}>−฿{fmt(m.exp1)}</Td>
+            <Td style={{ fontWeight: 600, color: m.net1 >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.net1)}</Td>
           </tr>
         ))}
-        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={10} text="ยังไม่มีข้อมูล" />}
+        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
       </TableShell>
 
-      <h3 style={{ fontSize: 18, fontWeight: 600, margin: "30px 0 12px", fontFamily: "'Roboto', sans-serif" }}>วิเคราะห์กำไรแยกตามกลุ่มเมนู (ตามช่วงวันที่ที่เลือกด้านบน)</h3>
+      <h3 style={{ fontSize: 16, fontWeight: 600, margin: "26px 0 10px", fontFamily: "'Roboto', sans-serif" }}>รายจ่ายประจำเดือน — ตาราง 2 (เบเกอรี่)</h3>
+      <TableShell headers={["เดือน", "รายจ่ายเบเกอรี่ประจำเดือน", "ยอดขายเบเกอรี่ประจำเดือน", "กำไรสุทธิ"]}>
+        {monthlyBreakdown.map((m) => (
+          <tr key={m.key}>
+            <Td>{monthLabel(m.key)}</Td>
+            <Td style={{ color: "#B23A2E" }}>−฿{fmt(m.exp2)}</Td>
+            <Td>฿{fmt(m.revBakery)}</Td>
+            <Td style={{ fontWeight: 600, color: m.net2 >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(m.net2)}</Td>
+          </tr>
+        ))}
+        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={4} text="ยังไม่มีข้อมูล" />}
+      </TableShell>
+
+      <h3 style={{ fontSize: 18, fontWeight: 600, margin: "30px 0 12px", fontFamily: "'Roboto', sans-serif" }}>สรุปกำไรตามช่วงวันที่ที่เลือกด้านบน</h3>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
         <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18 }}>
-          <h3 style={{ fontSize: 14.5, fontWeight: 600, color: "#4A320F", margin: "0 0 10px" }}>กำไรเมนูทั่วไป (รายได้ − รายจ่ายทั้งหมด ยกเว้นเงินทุนหมุนเวียนเบเกอรี่)</h3>
-          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>
-            ยอดขายเมนูทั่วไป ฿{fmt(generalTotal)} − รายจ่าย (ค่าเช่า+ค่าจ้าง+สาธารณูปโภคจริง ฿{fmt(actualRentStaffUtil)} + เงินทุนหมุนเวียนทั่วไป {generalPct}% ฿{fmt(rangeWorkingCapitalGeneral)} + ภาษี ฿{fmt(rangeTax)} + สำรอง ฿{fmt(rangeReserve)})
-          </div>
-          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: generalProfit >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(generalProfit)}</div>
+          <h3 style={{ fontSize: 14.5, fontWeight: 600, color: "#4A320F", margin: "0 0 10px" }}>ตาราง 1 — เมนูทั่วไป</h3>
+          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>ยอดขาย (อาหาร+น้ำ) ฿{fmt(generalTotal)} − รายจ่าย (ไม่รวมเค้ก) ฿{fmt(table1ExpenseRange)}</div>
+          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: table1Net >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(table1Net)}</div>
         </div>
-
         <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 18 }}>
-          <h3 style={{ fontSize: 14.5, fontWeight: 600, color: "#E3A730", margin: "0 0 10px" }}>กำไรเบเกอรี่ (คิดจากต้นทุนจริง)</h3>
-          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>
-            อัตรากำไรเฉลี่ยจากเมนูเบเกอรี่ (ราคาขาย − ต้นทุน): {(avgBakeryMarginPct * 100).toFixed(1)}%
-            {bakeryItems.length === 0 && " — ยังไม่มีเมนูเบเกอรี่ในหน้าจัดการเมนู"}
-          </div>
-          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>ยอดขายเบเกอรี่: ฿{fmt(bakeryTotal)}</div>
-          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: "#E3A730" }}>฿{fmt(bakeryProfit)}</div>
+          <h3 style={{ fontSize: 14.5, fontWeight: 600, color: "#E3A730", margin: "0 0 10px" }}>ตาราง 2 — เบเกอรี่</h3>
+          <div style={{ fontSize: 13.5, color: "#8A6E45", marginBottom: 4 }}>ยอดขายเบเกอรี่ ฿{fmt(bakeryTotal)} − รายจ่ายเบเกอรี่ ฿{fmt(table2ExpenseRange)}</div>
+          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: table2Net >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(table2Net)}</div>
         </div>
-      </div>
-
-      <div style={{ background: "#2E1F0D", borderRadius: 14, padding: "16px 20px", display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
-        <span style={{ color: "#E3A730", fontSize: 13.5, fontWeight: 600 }}>กำไรขั้นต้นรวมทั้งสองกลุ่ม (ตามช่วงวันที่ที่เลือก)</span>
-        <span style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, color: "#F4D793" }}>฿{fmt(generalProfit + bakeryProfit)}</span>
       </div>
 
       {/* แบ่งกำไรตามหุ้นส่วน */}
@@ -1662,36 +1727,135 @@ function SplitTab({ rangeProps, generalTotal, bakeryTotal, totalRevenue, totalEx
       {partnerPctTotal !== 100 && (
         <p style={{ margin: "0 0 10px", color: "#B23A2E", fontSize: 13 }}>รวมสัดส่วนหุ้นส่วนตอนนี้ {partnerPctTotal}% — ควรรวมให้ครบ 100%</p>
       )}
+      <p style={{ margin: "0 0 12px", color: "#B99B6B", fontSize: 13 }}>คำนวณจากกำไรสุทธิของตาราง 1 และตาราง 2 ตามช่วงวันที่ที่เลือกด้านบน</p>
 
-      <h4 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 8px", color: "#6B4F2A" }}>แบ่งกำไรประจำเดือน</h4>
-      <TableShell headers={["เดือน", "กำไรสุทธิ", ...partners.map((p) => p.name)]}>
-        {monthlyBreakdown.map((m) => {
-          const net = m.revTotal - m.total;
-          return (
-            <tr key={m.key}>
-              <Td>{monthLabel(m.key)}</Td>
-              <Td style={{ fontWeight: 600, color: net >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(net)}</Td>
-              {partners.map((p) => (
-                <Td key={p.id} style={{ color: "#3A2712" }}>฿{fmt(net * (p.pct / 100))}</Td>
-              ))}
-            </tr>
-          );
-        })}
-        {monthlyBreakdown.length === 0 && <EmptyRow colSpan={2 + partners.length} text="ยังไม่มีข้อมูล" />}
-      </TableShell>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 16 }}>
+        <div style={{ background: "#2E1F0D", borderRadius: 14, padding: 18 }}>
+          <div style={{ color: "#E3A730", fontSize: 12, fontWeight: 600, marginBottom: 8 }}>จากตาราง 1 (เมนูทั่วไป) — กำไร ฿{fmt(table1Net)}</div>
+          {partners.map((p) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", color: "#F4D793", fontSize: 14, marginBottom: 4 }}>
+              <span>{p.name} ({p.pct}%)</span><span>฿{fmt(table1Net * p.pct / 100)}</span>
+            </div>
+          ))}
+        </div>
+        <div style={{ background: "#2E1F0D", borderRadius: 14, padding: 18 }}>
+          <div style={{ color: "#E3A730", fontSize: 12, fontWeight: 600, marginBottom: 8 }}>จากตาราง 2 (เบเกอรี่) — กำไร ฿{fmt(table2Net)}</div>
+          {partners.map((p) => (
+            <div key={p.id} style={{ display: "flex", justifyContent: "space-between", color: "#F4D793", fontSize: 14, marginBottom: 4 }}>
+              <span>{p.name} ({p.pct}%)</span><span>฿{fmt(table2Net * p.pct / 100)}</span>
+            </div>
+          ))}
+        </div>
+      </div>
 
-      <div style={{ background: "#2E1F0D", borderRadius: 14, padding: "18px 24px", marginTop: 16, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+      <div style={{ background: "#2E1F0D", borderRadius: 14, padding: "18px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
         <div>
-          <div style={{ color: "#E3A730", fontSize: 13, letterSpacing: 1, fontWeight: 600, marginBottom: 4 }}>แบ่งกำไรทั้งหมด (ทุกเดือนที่มีข้อมูล)</div>
-          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 32, fontWeight: 600, color: allTimeNetProfit >= 0 ? "#F4D793" : "#E8998C" }}>฿{fmt(allTimeNetProfit)}</div>
+          <div style={{ color: "#E3A730", fontSize: 13, letterSpacing: 1, fontWeight: 600, marginBottom: 4 }}>แบ่งกำไรทั้งหมด (ทุกเดือนที่มีข้อมูล — ตาราง 1 + ตาราง 2)</div>
+          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 32, fontWeight: 600, color: (allTimeNet1 + allTimeNet2) >= 0 ? "#F4D793" : "#E8998C" }}>฿{fmt(allTimeNet1 + allTimeNet2)}</div>
         </div>
         <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
           {partners.map((p) => (
             <div key={p.id} style={{ textAlign: "right" }}>
               <div style={{ color: "#D9B979", fontSize: 13 }}>{p.name} ({p.pct}%)</div>
-              <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 24, fontWeight: 600, color: "#F4D793" }}>฿{fmt(allTimeNetProfit * (p.pct / 100))}</div>
+              <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 24, fontWeight: 600, color: "#F4D793" }}>฿{fmt((allTimeNet1 + allTimeNet2) * (p.pct / 100))}</div>
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- วิเคราะห์ยอดขายรายสินค้า: เทียบรายได้-รายจ่ายแยกหมวด บาร์/ครัว/เบเกอรี่ ----------
+function AnalysisTab({ revenue, expenses }) {
+  const [range, setRange] = useState("today");
+  const [customFrom, setCustomFrom] = useState(todayStr());
+  const [customTo, setCustomTo] = useState(todayStr());
+  const rangeProps = { range, setRange, customFrom, setCustomFrom, customTo, setCustomTo };
+
+  const { cutoff, upper } = useMemo(() => {
+    const d = new Date();
+    if (range === "today") return { cutoff: todayStr(), upper: todayStr() };
+    if (range === "7d") { d.setDate(d.getDate() - 6); return { cutoff: d.toISOString().slice(0, 10), upper: todayStr() }; }
+    if (range === "30d") { d.setDate(d.getDate() - 29); return { cutoff: d.toISOString().slice(0, 10), upper: todayStr() }; }
+    if (range === "custom") return { cutoff: customFrom, upper: customTo };
+    return { cutoff: "0000-00-00", upper: "9999-99-99" };
+  }, [range, customFrom, customTo]);
+
+  const filteredRevenue = revenue.filter((r) => r.date >= cutoff && r.date <= upper);
+  const filteredExpenses = expenses.filter((e) => e.date >= cutoff && e.date <= upper);
+
+  const totalRevenue = filteredRevenue.reduce((s, r) => s + recTotalSum(r), 0);
+  const bakeryRev = filteredRevenue.reduce((s, r) => s + grpSum(r.bakery), 0);
+  const foodRev = filteredRevenue.reduce((s, r) => s + grpSum(r.food), 0);
+  const drinkRev = filteredRevenue.reduce((s, r) => s + grpSum(computeDrinkGroup(r)), 0);
+
+  const wcAmount = (sub) => filteredExpenses.filter((e) => e.category === WORKING_CAPITAL && e.subcategory === sub).reduce((s, e) => s + Number(e.amount || 0), 0);
+
+  const rows = [
+    { label: "หมวดบาร์ (เมนูน้ำ)", revenue: drinkRev, expense: wcAmount("บาร์") },
+    { label: "หมวดครัว (เมนูอาหาร)", revenue: foodRev, expense: wcAmount("ครัว") },
+    { label: "หมวดเบเกอรี่", revenue: bakeryRev, expense: wcAmount("เค้ก") },
+  ].map((r) => ({ ...r, profit: r.revenue - r.expense, pct: r.revenue ? ((r.revenue - r.expense) / r.revenue) * 100 : 0 }));
+
+  const pieData = rows.filter((r) => r.revenue > 0).map((r) => ({ name: r.label, value: r.revenue }));
+
+  const exportRef = useRef(null);
+
+  return (
+    <div ref={exportRef}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: 6 }}>
+        <h1 style={{ fontFamily: "'Roboto', sans-serif", fontSize: 26, fontWeight: 600, margin: 0 }}>วิเคราะห์ยอดขายรายสินค้า</h1>
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <RangePicker {...rangeProps} />
+          <ExportButtons targetRef={exportRef} filename="วิเคราะห์ยอดขายรายสินค้า" />
+        </div>
+      </div>
+      <p style={{ margin: "4px 0 20px", color: "#8A6E45", fontSize: 15 }}>เทียบรายได้และรายจ่ายแยกตามหมวดสินค้า (ลิงก์ข้อมูลจากหน้าบันทึกยอดขายรายวัน) พร้อม % กำไรของแต่ละหมวด</p>
+
+      <div style={{ background: "#2E1F0D", borderRadius: 14, padding: "18px 24px", marginBottom: 20, display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 12 }}>
+        <div>
+          <div style={{ color: "#E3A730", fontSize: 12.5, fontWeight: 600, letterSpacing: 1 }}>สรุปรายได้ทั้งหมด (ตามช่วงที่เลือก)</div>
+          <div style={{ fontFamily: "'Roboto', sans-serif", fontSize: 34, fontWeight: 700, color: "#F4D793" }}>฿{fmt(totalRevenue)}</div>
+        </div>
+        <TrendingUp size={42} color="#D9B979" />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+        <TableShell headers={["หมวดหมู่", "รายได้", "รายจ่าย", "กำไร", "% กำไร"]}>
+          {rows.map((r) => (
+            <tr key={r.label}>
+              <Td style={{ fontWeight: 500 }}>{r.label}</Td>
+              <Td style={{ color: "#4A320F" }}>฿{fmt(r.revenue)}</Td>
+              <Td style={{ color: "#B23A2E" }}>−฿{fmt(r.expense)}</Td>
+              <Td style={{ fontWeight: 600, color: r.profit >= 0 ? "#4A320F" : "#B23A2E" }}>฿{fmt(r.profit)}</Td>
+              <Td>{r.pct.toFixed(1)}%</Td>
+            </tr>
+          ))}
+        </TableShell>
+        <div style={{ background: "#FFFFFF", border: "1px solid #EADFC4", borderRadius: 16, boxShadow: "0 1px 3px rgba(15,42,32,0.06)", padding: 20 }}>
+          <h3 style={{ fontSize: 14, fontWeight: 600, margin: "0 0 12px" }}>สัดส่วนรายได้ตามหมวด</h3>
+          {pieData.length > 0 ? (
+            <>
+              <ResponsiveContainer width="100%" height={170}>
+                <PieChart>
+                  <Pie data={pieData} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={62}>
+                    {pieData.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+                  </Pie>
+                  <Tooltip formatter={(v) => `฿${fmt(v)}`} contentStyle={{ borderRadius: 8, border: "1px solid #EADFC4", fontSize: 13 }} />
+                </PieChart>
+              </ResponsiveContainer>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
+                {pieData.map((c, i) => (
+                  <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13 }}>
+                    <span style={{ width: 8, height: 8, borderRadius: 4, background: PIE_COLORS[i % PIE_COLORS.length] }} />
+                    <span style={{ flex: 1, color: "#3A2712" }}>{c.name}</span>
+                    <span style={{ color: "#6B4F2A", fontWeight: 500 }}>฿{fmt(c.value)}</span>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : <p style={{ color: "#B99B6B", fontSize: 13 }}>ไม่มีข้อมูลในช่วงที่เลือก</p>}
         </div>
       </div>
     </div>
@@ -2114,6 +2278,14 @@ function DeleteBtn({ onClick }) {
     </button>
   );
 }
+function EditBtn({ onClick }) {
+  return (
+    <button onClick={onClick} style={{ background: "transparent", border: "none", cursor: "pointer", color: "#B99B6B", padding: 4, borderRadius: 6, display: "flex" }}
+      onMouseEnter={(e) => (e.currentTarget.style.color = "#4A320F")} onMouseLeave={(e) => (e.currentTarget.style.color = "#B99B6B")}>
+      <Pencil size={15} />
+    </button>
+  );
+}
 
 // ---------- หน้าล็อกอิน ----------
 function LoginScreen({ onLogin }) {
@@ -2216,4 +2388,3 @@ export default function Root() {
     />
   );
 }
-
